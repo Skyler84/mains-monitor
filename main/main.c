@@ -58,8 +58,16 @@ static void calculate_statistics(const int *buffer, adc_statistics_t *stats);
 
 void app_main(void)
 {
+    // Create synchronization primitives
+    buffer_mutex = xSemaphoreCreateMutex();
+    processing_semaphore = xSemaphoreCreateBinary();
+    
+    if (buffer_mutex == NULL || processing_semaphore == NULL) {
+        ESP_LOGE(TAG, "Failed to create synchronization primitives");
+        return;
+    }
+
     //-------------ADC1 Init---------------//
-    adc_oneshot_unit_handle_t adc1_handle;
     adc_oneshot_unit_init_cfg_t init_config1 = {
         .unit_id = ADC_UNIT_1,
     };
@@ -73,27 +81,164 @@ void app_main(void)
     ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, EXAMPLE_ADC1_CHAN0, &config));
 
     //-------------ADC1 Calibration Init---------------//
-    adc_cali_handle_t adc1_cali_chan0_handle = NULL;
-    bool do_calibration1_chan0 = example_adc_calibration_init(ADC_UNIT_1, EXAMPLE_ADC1_CHAN0, EXAMPLE_ADC_ATTEN, &adc1_cali_chan0_handle);
+    adc_calibrated = example_adc_calibration_init(ADC_UNIT_1, EXAMPLE_ADC1_CHAN0, EXAMPLE_ADC_ATTEN, &adc1_cali_handle);
 
-    ESP_LOGI(TAG, "ADC initialization complete. Starting measurements on GPIO0...");
+    ESP_LOGI(TAG, "ADC initialization complete. Starting continuous sampling at %d Hz...", SAMPLE_RATE_HZ);
 
+    // Create processing task
+    xTaskCreate(adc_processing_task, "adc_processing", 4096, NULL, 5, NULL);
+
+    // Create and start timer for ADC sampling
+    esp_timer_create_args_t timer_args = {
+        .callback = &adc_timer_callback,
+        .arg = NULL,
+        .name = "adc_timer"
+    };
+    esp_timer_handle_t adc_timer;
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &adc_timer));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(adc_timer, SAMPLE_PERIOD_US));
+
+    ESP_LOGI(TAG, "Continuous ADC sampling started. Statistics will be calculated every %d samples.", BUFFER_SIZE);
+
+    // Main task just monitors the system
     while (1) {
-        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw[0][0]));
-        ESP_LOGI(TAG, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, adc_raw[0][0]);
-        
-        if (do_calibration1_chan0) {
-            ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan0_handle, adc_raw[0][0], &voltage[0][0]));
-            ESP_LOGI(TAG, "ADC%d Channel[%d] Cali Voltage: %d mV", ADC_UNIT_1 + 1, EXAMPLE_ADC1_CHAN0, voltage[0][0]);
-        }
-        
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        ESP_LOGI(TAG, "System running... Buffer index: %lu", buffer_index);
     }
 
-    //Tear Down
+    // Cleanup (never reached in this implementation)
+    esp_timer_stop(adc_timer);
+    esp_timer_delete(adc_timer);
     ESP_ERROR_CHECK(adc_oneshot_del_unit(adc1_handle));
-    if (do_calibration1_chan0) {
-        example_adc_calibration_deinit(adc1_cali_chan0_handle);
+    if (adc_calibrated) {
+        example_adc_calibration_deinit(adc1_cali_handle);
+    }
+    vSemaphoreDelete(buffer_mutex);
+    vSemaphoreDelete(processing_semaphore);
+}
+
+/*---------------------------------------------------------------
+        ADC Timer Callback - Called at 10kHz
+---------------------------------------------------------------*/
+static void IRAM_ATTR adc_timer_callback(void* arg)
+{
+    int adc_raw = 0;
+    
+    // Read ADC value (this should be fast)
+    esp_err_t ret = adc_oneshot_read(adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw);
+    if (ret != ESP_OK) {
+        return; // Skip this sample if read fails
+    }
+    
+    // Store sample in current buffer
+    ((int*)current_buffer)[buffer_index] = adc_raw;
+    buffer_index++;
+    
+    // Check if buffer is full
+    if (buffer_index >= BUFFER_SIZE) {
+        // Buffer is full, switch buffers
+        if (current_buffer == adc_buffer_a) {
+            processing_buffer = adc_buffer_a;
+            current_buffer = adc_buffer_b;
+        } else {
+            processing_buffer = adc_buffer_b;
+            current_buffer = adc_buffer_a;
+        }
+        
+        buffer_index = 0;
+        buffer_ready_for_processing = true;
+        
+        // Signal processing task
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        xSemaphoreGiveFromISR(processing_semaphore, &xHigherPriorityTaskWoken);
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+}
+
+/*---------------------------------------------------------------
+        ADC Processing Task
+---------------------------------------------------------------*/
+static void adc_processing_task(void *pvParameters)
+{
+    adc_statistics_t stats;
+    
+    while (1) {
+        // Wait for buffer to be ready
+        if (xSemaphoreTake(processing_semaphore, portMAX_DELAY) == pdTRUE) {
+            if (buffer_ready_for_processing && processing_buffer != NULL) {
+                
+                // Calculate statistics on the completed buffer
+                calculate_statistics((const int*)processing_buffer, &stats);
+                
+                // Print statistics
+                ESP_LOGI(TAG, "=== ADC Statistics (10000 samples) ===");
+                ESP_LOGI(TAG, "Raw ADC - Mean: %.1f, RMS: %.1f, StdDev: %.1f", 
+                         stats.mean, stats.rms, stats.std_dev);
+                ESP_LOGI(TAG, "Raw ADC - Min: %d, Max: %d", stats.min_value, stats.max_value);
+                
+                if (adc_calibrated) {
+                    ESP_LOGI(TAG, "Voltage - Mean: %.1f mV, RMS: %.1f mV", 
+                             stats.mean_voltage_mv, stats.rms_voltage_mv);
+                }
+                ESP_LOGI(TAG, "=====================================");
+                
+                buffer_ready_for_processing = false;
+            }
+        }
+    }
+}
+
+/*---------------------------------------------------------------
+        Statistics Calculation
+---------------------------------------------------------------*/
+static void calculate_statistics(const int *buffer, adc_statistics_t *stats)
+{
+    int64_t sum = 0;
+    int64_t sum_squares = 0;
+    int min_val = buffer[0];
+    int max_val = buffer[0];
+    
+    // First pass: calculate sum, min, max
+    for (int i = 0; i < BUFFER_SIZE; i++) {
+        int value = buffer[i];
+        sum += value;
+        sum_squares += (int64_t)value * value;
+        
+        if (value < min_val) min_val = value;
+        if (value > max_val) max_val = value;
+    }
+    
+    // Calculate mean
+    stats->mean = (float)sum / BUFFER_SIZE;
+    
+    // Calculate RMS
+    stats->rms = sqrtf((float)sum_squares / BUFFER_SIZE);
+    
+    // Calculate standard deviation
+    float variance = ((float)sum_squares / BUFFER_SIZE) - (stats->mean * stats->mean);
+    stats->std_dev = sqrtf(variance);
+    
+    // Set min/max
+    stats->min_value = min_val;
+    stats->max_value = max_val;
+    
+    // Convert to voltage if calibration is available
+    if (adc_calibrated && adc1_cali_handle != NULL) {
+        int mean_voltage_raw, rms_voltage_raw;
+        
+        esp_err_t ret1 = adc_cali_raw_to_voltage(adc1_cali_handle, (int)stats->mean, &mean_voltage_raw);
+        esp_err_t ret2 = adc_cali_raw_to_voltage(adc1_cali_handle, (int)stats->rms, &rms_voltage_raw);
+        
+        if (ret1 == ESP_OK && ret2 == ESP_OK) {
+            stats->mean_voltage_mv = (float)mean_voltage_raw;
+            stats->rms_voltage_mv = (float)rms_voltage_raw;
+        } else {
+            stats->mean_voltage_mv = 0.0f;
+            stats->rms_voltage_mv = 0.0f;
+        }
+    } else {
+        stats->mean_voltage_mv = 0.0f;
+        stats->rms_voltage_mv = 0.0f;
     }
 }
 
