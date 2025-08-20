@@ -562,7 +562,7 @@
         
         function startAutoUpdate() {
             updateStats(); // Initial update
-            updateInterval = setInterval(updateStats, 1000);
+            updateInterval = setInterval(updateStats, 500); // 2Hz - poll every 500ms
         }
         
         function stopAutoUpdate() {
