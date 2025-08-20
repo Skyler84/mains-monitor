@@ -279,84 +279,161 @@
             <button class="btn btn-secondary" onclick="toggleBackgroundLogging()" id="background-button">🌙 Background Off</button>
         </div>
 
-        <div class="settings-section">
-            <div class="settings-title">⚙️ Mains Standards Configuration</div>
-            <div class="settings-group">
-                <div class="radio-group">
-                    <label>Nominal Voltage:</label>
-                    <div class="radio-option">
-                        <input type="radio" id="voltage-230" name="voltage" value="230" checked onchange="updateMainsSettings()">
-                        <span>230V (EU/UK/AU)</span>
-                    </div>
-                    <div class="radio-option">
-                        <input type="radio" id="voltage-240" name="voltage" value="240" onchange="updateMainsSettings()">
-                        <span>240V (UK/AU)</span>
-                    </div>
-                    <div class="radio-option">
-                        <input type="radio" id="voltage-110" name="voltage" value="110" onchange="updateMainsSettings()">
-                        <span>110V (US/CA/JP)</span>
-                    </div>
-                </div>
-                <div class="radio-group">
-                    <label>Nominal Frequency:</label>
-                    <div class="radio-option">
-                        <input type="radio" id="freq-50" name="frequency" value="50" checked onchange="updateMainsSettings()">
-                        <span>50 Hz (EU/UK/AU/Asia)</span>
-                    </div>
-                    <div class="radio-option">
-                        <input type="radio" id="freq-60" name="frequency" value="60" onchange="updateMainsSettings()">
-                        <span>60 Hz (US/CA/JP)</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="history-info">
-            <span id="history-count">No data logged</span> | 
-            <span id="history-duration">--</span> |
-            <span id="background-status">Background logging: Off</span>
-        </div>
-
+        <!-- Top-level navigation tabs -->
         <div class="tab-container">
             <div class="tab-buttons">
-                <button class="tab-button active" onclick="showTab('current')">Current Stats</button>
-                <button class="tab-button" onclick="showTab('frequency')">Frequency History</button>
-                <button class="tab-button" onclick="showTab('voltage')">Voltage History</button>
-                <button class="tab-button" onclick="showTab('oscilloscope')">Oscilloscope</button>
+                <button class="tab-button active" onclick="showMainTab('monitoring')">📊 Monitoring</button>
+                <button class="tab-button" onclick="showMainTab('config')">⚙️ Configuration</button>
             </div>
 
-            <div class="tab-content active" id="current-tab">
-                <div class="chart-container">
-                    <div class="chart-title">Real-time Overview</div>
-                    <p style="text-align: center; color: #666;">
-                        Click "Start Logging" to begin recording historical data.
-                        Charts will appear here once data collection begins.
-                    </p>
+            <!-- Monitoring Tab Content -->
+            <div class="tab-content active" id="monitoring-main-tab">
+                <div class="history-info">
+                    <span id="history-count">No data logged</span> | 
+                    <span id="history-duration">--</span> |
+                    <span id="background-status">Background logging: Off</span>
                 </div>
-            </div>
 
-            <div class="tab-content" id="frequency-tab">
-                <div class="chart-container">
-                    <div class="chart-title">Frequency Variations Over Time</div>
-                    <canvas id="frequency-chart"></canvas>
-                </div>
-            </div>
-
-            <div class="tab-content" id="voltage-tab">
-                <div class="chart-container">
-                    <div class="chart-title">Voltage Variations Over Time</div>
-                    <canvas id="voltage-chart"></canvas>
-                </div>
-            </div>
-
-            <div class="tab-content" id="oscilloscope-tab">
-                <div class="chart-container">
-                    <div class="chart-title">Live Voltage Waveform (Oscilloscope)</div>
-                    <div style="text-align: center; margin-bottom: 10px;">
-                        <button class="btn btn-secondary" onclick="toggleOscilloscope()" id="startOscilloscope">📡 Start Oscilloscope</button>
-                        <span id="connectionStatus" class="connection-status disconnected" style="margin-left: 15px;">Disconnected</span>
+                <!-- Sub-tabs for monitoring -->
+                <div class="tab-container">
+                    <div class="tab-buttons">
+                        <button class="tab-button active" onclick="showTab('current')">Current Stats</button>
+                        <button class="tab-button" onclick="showTab('frequency')">Frequency History</button>
+                        <button class="tab-button" onclick="showTab('voltage')">Voltage History</button>
+                        <button class="tab-button" onclick="showTab('oscilloscope')">Oscilloscope</button>
                     </div>
-                    <canvas id="oscilloscope-chart"></canvas>
+
+                    <div class="tab-content active" id="current-tab">
+                        <div class="chart-container">
+                            <div class="chart-title">Real-time Overview</div>
+                            <p style="text-align: center; color: #666;">
+                                Click "Start Logging" to begin recording historical data.
+                                Charts will appear here once data collection begins.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="tab-content" id="frequency-tab">
+                        <div class="chart-container">
+                            <div class="chart-title">Frequency Variations Over Time</div>
+                            <canvas id="frequency-chart"></canvas>
+                        </div>
+                    </div>
+
+                    <div class="tab-content" id="voltage-tab">
+                        <div class="chart-container">
+                            <div class="chart-title">Voltage Variations Over Time</div>
+                            <canvas id="voltage-chart"></canvas>
+                        </div>
+                    </div>
+
+                    <div class="tab-content" id="oscilloscope-tab">
+                        <div class="chart-container">
+                            <div class="chart-title">Live Voltage Waveform (Oscilloscope)</div>
+                            <div style="text-align: center; margin-bottom: 10px;">
+                                <button class="btn btn-secondary" onclick="toggleOscilloscope()" id="startOscilloscope">📡 Start Oscilloscope</button>
+                                <span id="connectionStatus" class="connection-status disconnected" style="margin-left: 15px;">Disconnected</span>
+                            </div>
+                            <canvas id="oscilloscope-chart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Configuration Tab Content -->
+            <div class="tab-content" id="config-main-tab">
+                <!-- Sub-tabs for configuration -->
+                <div class="tab-container">
+                    <div class="tab-buttons">
+                        <button class="tab-button active" onclick="showConfigTab('mains')">🔌 Mains Standards</button>
+                        <button class="tab-button" onclick="showConfigTab('wifi')">📶 WiFi Settings</button>
+                    </div>
+
+                    <!-- Mains Configuration Tab -->
+                    <div class="tab-content active" id="mains-config-tab">
+                        <div class="settings-section">
+                            <div class="settings-title">⚙️ Mains Standards Configuration</div>
+                            <div class="settings-group">
+                                <div class="radio-group">
+                                    <label>Nominal Voltage:</label>
+                                    <div class="radio-option">
+                                        <input type="radio" id="voltage-230" name="voltage" value="230" checked onchange="updateMainsSettings()">
+                                        <span>230V (EU/UK/AU)</span>
+                                    </div>
+                                    <div class="radio-option">
+                                        <input type="radio" id="voltage-240" name="voltage" value="240" onchange="updateMainsSettings()">
+                                        <span>240V (UK/AU)</span>
+                                    </div>
+                                    <div class="radio-option">
+                                        <input type="radio" id="voltage-110" name="voltage" value="110" onchange="updateMainsSettings()">
+                                        <span>110V (US/CA/JP)</span>
+                                    </div>
+                                </div>
+                                <div class="radio-group">
+                                    <label>Nominal Frequency:</label>
+                                    <div class="radio-option">
+                                        <input type="radio" id="freq-50" name="frequency" value="50" checked onchange="updateMainsSettings()">
+                                        <span>50 Hz (EU/UK/AU/Asia)</span>
+                                    </div>
+                                    <div class="radio-option">
+                                        <input type="radio" id="freq-60" name="frequency" value="60" onchange="updateMainsSettings()">
+                                        <span>60 Hz (US/CA/JP)</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- WiFi Configuration Tab -->
+                    <div class="tab-content" id="wifi-config-tab">
+                        <div class="chart-container">
+                            <div class="chart-title">📶 WiFi Configuration</div>
+                            <div style="max-width: 500px; margin: 0 auto;">
+                                <div class="settings-group" style="flex-direction: column; gap: 20px;">
+                                    <div class="radio-group">
+                                        <label>WiFi Mode:</label>
+                                        <div class="radio-option">
+                                            <input type="radio" id="mode-ap" name="wifi-mode" value="0" checked onchange="updateWiFiModeSettings()">
+                                            <span>Access Point (Hotspot) - Create your own WiFi network</span>
+                                        </div>
+                                        <div class="radio-option">
+                                            <input type="radio" id="mode-station" name="wifi-mode" value="1" onchange="updateWiFiModeSettings()">
+                                            <span>Station - Connect to existing WiFi network</span>
+                                        </div>
+                                    </div>
+                                    
+                                    <div style="display: flex; flex-direction: column; gap: 15px;">
+                                        <div>
+                                            <label for="wifi-ssid" style="display: block; font-weight: bold; margin-bottom: 5px;">Network Name (SSID):</label>
+                                            <input type="text" id="wifi-ssid" placeholder="Enter SSID" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                                        </div>
+                                        
+                                        <div>
+                                            <label for="wifi-password" style="display: block; font-weight: bold; margin-bottom: 5px;">Password:</label>
+                                            <input type="password" id="wifi-password" placeholder="Enter password" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;">
+                                        </div>
+                                    </div>
+                                    
+                                    <div style="text-align: center; margin-top: 20px;">
+                                        <button class="btn" onclick="saveWiFiSettings()">💾 Save WiFi Settings</button>
+                                        <button class="btn btn-secondary" onclick="loadWiFiSettings()" style="margin-left: 10px;">🔄 Reload Current</button>
+                                    </div>
+                                    
+                                    <div id="wifi-status" style="text-align: center; margin-top: 15px; padding: 10px; border-radius: 4px; display: none;">
+                                    </div>
+                                    
+                                    <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 4px solid #17a2b8; margin-top: 20px;">
+                                        <strong>ℹ️ Important:</strong>
+                                        <ul style="margin: 10px 0; padding-left: 20px;">
+                                            <li><strong>Access Point Mode:</strong> Device creates its own WiFi network. Connect to it and browse to <code>192.168.4.1</code></li>
+                                            <li><strong>Station Mode:</strong> Device connects to your existing WiFi. Check your router for the assigned IP address</li>
+                                            <li><strong>Note:</strong> After saving settings, the device needs to be restarted to apply changes</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -769,18 +846,54 @@
         }
         
         function showTab(tabName) {
-            // Hide all tabs
-            document.querySelectorAll('.tab-content').forEach(tab => {
+            // Hide all monitoring sub-tabs
+            document.querySelectorAll('#monitoring-main-tab .tab-content').forEach(tab => {
                 tab.classList.remove('active');
             });
             
-            // Remove active class from all buttons
-            document.querySelectorAll('.tab-button').forEach(btn => {
+            // Remove active class from all monitoring sub-tab buttons
+            document.querySelectorAll('#monitoring-main-tab .tab-button').forEach(btn => {
                 btn.classList.remove('active');
             });
             
-            // Show selected tab
+            // Show selected monitoring tab
             document.getElementById(tabName + '-tab').classList.add('active');
+            
+            // Add active class to clicked button
+            event.target.classList.add('active');
+        }
+        
+        function showMainTab(tabName) {
+            // Hide all main tabs
+            document.querySelectorAll('.tab-container > .tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Remove active class from all main tab buttons
+            document.querySelectorAll('.tab-container > .tab-buttons .tab-button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            // Show selected main tab
+            document.getElementById(tabName + '-main-tab').classList.add('active');
+            
+            // Add active class to clicked button
+            event.target.classList.add('active');
+        }
+        
+        function showConfigTab(tabName) {
+            // Hide all config sub-tabs
+            document.querySelectorAll('#config-main-tab .tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Remove active class from all config sub-tab buttons
+            document.querySelectorAll('#config-main-tab .tab-button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            // Show selected config tab
+            document.getElementById(tabName + '-config-tab').classList.add('active');
             
             // Add active class to clicked button
             event.target.classList.add('active');
@@ -936,6 +1049,106 @@
             // Update chart
             oscilloscopeChart.update('none'); // 'none' mode for better performance
         }
+        
+        // WiFi Settings Functions
+        function loadWiFiSettings() {
+            fetch('/api/wifi')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('wifi-ssid').value = data.ssid;
+                    document.getElementById('wifi-password').value = data.password;
+                    
+                    if (data.mode === 0) {
+                        document.getElementById('mode-ap').checked = true;
+                    } else {
+                        document.getElementById('mode-station').checked = true;
+                    }
+                    
+                    updateWiFiModeSettings();
+                })
+                .catch(err => {
+                    console.error('Error loading WiFi settings:', err);
+                    showWiFiStatus('Failed to load WiFi settings', 'error');
+                });
+        }
+        
+        function saveWiFiSettings() {
+            const ssid = document.getElementById('wifi-ssid').value.trim();
+            const password = document.getElementById('wifi-password').value;
+            const mode = document.querySelector('input[name="wifi-mode"]:checked').value;
+            
+            if (!ssid) {
+                showWiFiStatus('SSID cannot be empty', 'error');
+                return;
+            }
+            
+            const wifiConfig = {
+                ssid: ssid,
+                password: password,
+                mode: parseInt(mode)
+            };
+            
+            fetch('/api/wifi', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(wifiConfig)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    showWiFiStatus(data.message, 'success');
+                } else {
+                    showWiFiStatus(data.message, 'error');
+                }
+            })
+            .catch(err => {
+                console.error('Error saving WiFi settings:', err);
+                showWiFiStatus('Failed to save WiFi settings', 'error');
+            });
+        }
+        
+        function updateWiFiModeSettings() {
+            const isStationMode = document.getElementById('mode-station').checked;
+            const ssidInput = document.getElementById('wifi-ssid');
+            const passwordInput = document.getElementById('wifi-password');
+            
+            if (isStationMode) {
+                ssidInput.placeholder = 'Enter WiFi network name to connect to';
+                passwordInput.placeholder = 'Enter WiFi network password';
+            } else {
+                ssidInput.placeholder = 'Enter hotspot name to create';
+                passwordInput.placeholder = 'Enter hotspot password (optional)';
+            }
+        }
+        
+        function showWiFiStatus(message, type) {
+            const statusDiv = document.getElementById('wifi-status');
+            statusDiv.textContent = message;
+            statusDiv.style.display = 'block';
+            
+            if (type === 'success') {
+                statusDiv.style.backgroundColor = 'rgba(40, 167, 69, 0.1)';
+                statusDiv.style.color = '#28a745';
+                statusDiv.style.borderLeft = '4px solid #28a745';
+            } else {
+                statusDiv.style.backgroundColor = 'rgba(220, 53, 69, 0.1)';
+                statusDiv.style.color = '#dc3545';
+                statusDiv.style.borderLeft = '4px solid #dc3545';
+            }
+            
+            // Hide status after 5 seconds
+            setTimeout(() => {
+                statusDiv.style.display = 'none';
+            }, 5000);
+        }
+        
+        // Initialize WiFi settings when page loads
+        window.addEventListener('load', function() {
+            // Load WiFi settings when the page loads
+            loadWiFiSettings();
+        });
     </script>
 </body>
 </html>

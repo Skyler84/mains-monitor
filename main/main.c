@@ -33,6 +33,13 @@ static const char *TAG = "ADC_MONITOR";
 #define WIFI_CHANNEL            1
 #define MAX_STA_CONN            4
 
+// WiFi configuration structure
+typedef struct {
+    char ssid[32];
+    char password[64];
+    uint8_t mode; // 0 = AP, 1 = Station
+} custom_wifi_config_t;
+
 // Voltage scaling configuration
 #define ISOLATION_RATIO             (242.5f / 8.4f)    // 242.5V to 8.4V isolation transformer
 #define STEPDOWN_RATIO              11.0f              // 11:1 voltage divider
@@ -116,6 +123,13 @@ typedef struct {
 // Latest statistics for web display
 static adc_statistics_t latest_stats = {0};
 
+// WiFi configuration
+static custom_wifi_config_t current_wifi_config = {
+    .ssid = WIFI_SSID,
+    .password = WIFI_PASS,
+    .mode = 0 // Default to AP mode
+};
+
 // External references to embedded files
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
@@ -127,8 +141,14 @@ static void adc_timer_callback(void* arg);
 static void adc_processing_task(void *pvParameters);
 static void calculate_statistics(const float *voltage_buffer, adc_statistics_t *stats);
 static void wifi_init_softap(void);
+static void wifi_init_station(void);
+static void wifi_load_config(void);
+static void wifi_save_config(void);
+static void wifi_apply_config(void);
 static esp_err_t root_get_handler(httpd_req_t *req);
 static esp_err_t api_stats_get_handler(httpd_req_t *req);
+static esp_err_t api_wifi_get_handler(httpd_req_t *req);
+static esp_err_t api_wifi_post_handler(httpd_req_t *req);
 static esp_err_t ws_handler(httpd_req_t *req);
 static void ws_data_task(void *pvParameters);
 static httpd_handle_t start_webserver(void);
@@ -146,6 +166,9 @@ void app_main(void)
     // Initialize networking
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    
+    // Load WiFi configuration from NVS
+    wifi_load_config();
     
     // Create synchronization primitives
     buffer_mutex = xSemaphoreCreateMutex();
@@ -194,11 +217,15 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Continuous ADC sampling started. Statistics will be calculated every %d samples.", BUFFER_SIZE);
 
-    // Initialize WiFi AP and start web server
-    wifi_init_softap();
+    // Initialize WiFi and start web server
+    wifi_apply_config();
     server = start_webserver();
     if (server) {
-        ESP_LOGI(TAG, "Web server started. Connect to WiFi '%s' and browse to http://192.168.4.1", WIFI_SSID);
+        if (current_wifi_config.mode == 0) {
+            ESP_LOGI(TAG, "Web server started in AP mode. Connect to WiFi '%s' and browse to http://192.168.4.1", current_wifi_config.ssid);
+        } else {
+            ESP_LOGI(TAG, "Web server started in Station mode. Check your router for the assigned IP address.");
+        }
     }
 
     // Main task just monitors the system
@@ -471,6 +498,75 @@ static void calculate_statistics(const float *voltage_buffer, adc_statistics_t *
 }
 
 /*---------------------------------------------------------------
+        WiFi Configuration Functions
+---------------------------------------------------------------*/
+static void wifi_load_config(void)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("wifi_config", NVS_READONLY, &nvs_handle);
+    
+    if (err == ESP_OK) {
+        size_t required_size;
+        
+        // Load SSID
+        required_size = sizeof(current_wifi_config.ssid);
+        err = nvs_get_str(nvs_handle, "ssid", current_wifi_config.ssid, &required_size);
+        if (err != ESP_OK) {
+            strcpy(current_wifi_config.ssid, WIFI_SSID);
+        }
+        
+        // Load password
+        required_size = sizeof(current_wifi_config.password);
+        err = nvs_get_str(nvs_handle, "password", current_wifi_config.password, &required_size);
+        if (err != ESP_OK) {
+            strcpy(current_wifi_config.password, WIFI_PASS);
+        }
+        
+        // Load mode
+        err = nvs_get_u8(nvs_handle, "mode", &current_wifi_config.mode);
+        if (err != ESP_OK) {
+            current_wifi_config.mode = 0; // Default to AP mode
+        }
+        
+        nvs_close(nvs_handle);
+        ESP_LOGI(TAG, "WiFi config loaded: SSID=%s, Mode=%s", 
+                 current_wifi_config.ssid, 
+                 current_wifi_config.mode == 0 ? "AP" : "Station");
+    } else {
+        ESP_LOGI(TAG, "WiFi config not found, using defaults");
+        strcpy(current_wifi_config.ssid, WIFI_SSID);
+        strcpy(current_wifi_config.password, WIFI_PASS);
+        current_wifi_config.mode = 0;
+    }
+}
+
+static void wifi_save_config(void)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("wifi_config", NVS_READWRITE, &nvs_handle);
+    
+    if (err == ESP_OK) {
+        nvs_set_str(nvs_handle, "ssid", current_wifi_config.ssid);
+        nvs_set_str(nvs_handle, "password", current_wifi_config.password);
+        nvs_set_u8(nvs_handle, "mode", current_wifi_config.mode);
+        nvs_commit(nvs_handle);
+        nvs_close(nvs_handle);
+        ESP_LOGI(TAG, "WiFi config saved");
+    } else {
+        ESP_LOGE(TAG, "Failed to save WiFi config");
+    }
+}
+
+static void wifi_apply_config(void)
+{
+    if (current_wifi_config.mode == 0) {
+        wifi_init_softap();
+    } else {
+        wifi_init_station();
+    }
+}
+
+/*---------------------------------------------------------------
         WiFi Access Point Setup
 ---------------------------------------------------------------*/
 static void wifi_init_softap(void)
@@ -482,16 +578,17 @@ static void wifi_init_softap(void)
 
     wifi_config_t wifi_config = {
         .ap = {
-            .ssid = WIFI_SSID,
-            .ssid_len = strlen(WIFI_SSID),
+            .ssid_len = strlen(current_wifi_config.ssid),
             .channel = WIFI_CHANNEL,
-            .password = WIFI_PASS,
             .max_connection = MAX_STA_CONN,
             .authmode = WIFI_AUTH_WPA_WPA2_PSK
         },
     };
     
-    if (strlen(WIFI_PASS) == 0) {
+    strcpy((char*)wifi_config.ap.ssid, current_wifi_config.ssid);
+    strcpy((char*)wifi_config.ap.password, current_wifi_config.password);
+    
+    if (strlen(current_wifi_config.password) == 0) {
         wifi_config.ap.authmode = WIFI_AUTH_OPEN;
     }
 
@@ -499,7 +596,30 @@ static void wifi_init_softap(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "WiFi AP started. SSID: %s, Password: %s", WIFI_SSID, WIFI_PASS);
+    ESP_LOGI(TAG, "WiFi AP started. SSID: %s", current_wifi_config.ssid);
+}
+
+static void wifi_init_station(void)
+{
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    wifi_config_t wifi_config = {
+        .sta = {
+            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+        },
+    };
+    
+    strcpy((char*)wifi_config.sta.ssid, current_wifi_config.ssid);
+    strcpy((char*)wifi_config.sta.password, current_wifi_config.password);
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "WiFi Station mode started. Connecting to SSID: %s", current_wifi_config.ssid);
 }
 
 /*---------------------------------------------------------------
@@ -538,6 +658,84 @@ static esp_err_t api_stats_get_handler(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     return httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t api_wifi_get_handler(httpd_req_t *req)
+{
+    char json_response[256];
+    
+    snprintf(json_response, sizeof(json_response),
+        "{"
+        "\"ssid\":\"%s\","
+        "\"password\":\"%s\","
+        "\"mode\":%d"
+        "}",
+        current_wifi_config.ssid,
+        current_wifi_config.password,
+        current_wifi_config.mode
+    );
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t api_wifi_post_handler(httpd_req_t *req)
+{
+    char content[512];
+    int ret = httpd_req_recv(req, content, sizeof(content) - 1);
+    if (ret <= 0) {
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+            httpd_resp_send_408(req);
+        }
+        return ESP_FAIL;
+    }
+    content[ret] = '\0';
+    
+    // Parse JSON (simple parsing for our specific format)
+    char *ssid_start = strstr(content, "\"ssid\":\"");
+    char *password_start = strstr(content, "\"password\":\"");
+    char *mode_start = strstr(content, "\"mode\":");
+    
+    if (ssid_start && password_start && mode_start) {
+        // Extract SSID
+        ssid_start += 8; // Skip "ssid":"
+        char *ssid_end = strchr(ssid_start, '"');
+        if (ssid_end) {
+            size_t ssid_len = ssid_end - ssid_start;
+            if (ssid_len < sizeof(current_wifi_config.ssid)) {
+                strncpy(current_wifi_config.ssid, ssid_start, ssid_len);
+                current_wifi_config.ssid[ssid_len] = '\0';
+            }
+        }
+        
+        // Extract password
+        password_start += 12; // Skip "password":"
+        char *password_end = strchr(password_start, '"');
+        if (password_end) {
+            size_t password_len = password_end - password_start;
+            if (password_len < sizeof(current_wifi_config.password)) {
+                strncpy(current_wifi_config.password, password_start, password_len);
+                current_wifi_config.password[password_len] = '\0';
+            }
+        }
+        
+        // Extract mode
+        mode_start += 7; // Skip "mode":
+        current_wifi_config.mode = atoi(mode_start);
+        
+        // Save configuration
+        wifi_save_config();
+        
+        // Send success response
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        return httpd_resp_send(req, "{\"status\":\"success\",\"message\":\"WiFi settings updated. Restart device to apply.\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, "{\"status\":\"error\",\"message\":\"Invalid JSON format\"}", HTTPD_RESP_USE_STRLEN);
 }
 
 /*---------------------------------------------------------------
@@ -679,6 +877,24 @@ static httpd_handle_t start_webserver(void)
             .user_ctx  = NULL
         };
         httpd_register_uri_handler(server, &api_stats);
+
+        // WiFi config GET handler
+        httpd_uri_t api_wifi_get = {
+            .uri       = "/api/wifi",
+            .method    = HTTP_GET,
+            .handler   = api_wifi_get_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(server, &api_wifi_get);
+
+        // WiFi config POST handler
+        httpd_uri_t api_wifi_post = {
+            .uri       = "/api/wifi",
+            .method    = HTTP_POST,
+            .handler   = api_wifi_post_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(server, &api_wifi_post);
 
         // WebSocket oscilloscope handler
         httpd_uri_t ws = {
