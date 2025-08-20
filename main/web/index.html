@@ -202,6 +202,29 @@
             color: #666;
             font-size: 14px;
         }
+        
+        /* Connection status styles */
+        .connection-status {
+            font-weight: bold;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        
+        .connection-status.connected {
+            color: #28a745;
+            background-color: rgba(40, 167, 69, 0.1);
+        }
+        
+        .connection-status.disconnected {
+            color: #dc3545;
+            background-color: rgba(220, 53, 69, 0.1);
+        }
+        
+        .connection-status.error {
+            color: #fd7e14;
+            background-color: rgba(253, 126, 20, 0.1);
+        }
     </style>
 </head>
 <body>
@@ -299,6 +322,7 @@
                 <button class="tab-button active" onclick="showTab('current')">Current Stats</button>
                 <button class="tab-button" onclick="showTab('frequency')">Frequency History</button>
                 <button class="tab-button" onclick="showTab('voltage')">Voltage History</button>
+                <button class="tab-button" onclick="showTab('oscilloscope')">Oscilloscope</button>
             </div>
 
             <div class="tab-content active" id="current-tab">
@@ -324,6 +348,17 @@
                     <canvas id="voltage-chart"></canvas>
                 </div>
             </div>
+
+            <div class="tab-content" id="oscilloscope-tab">
+                <div class="chart-container">
+                    <div class="chart-title">Live Voltage Waveform (Oscilloscope)</div>
+                    <div style="text-align: center; margin-bottom: 10px;">
+                        <button class="btn btn-secondary" onclick="toggleOscilloscope()" id="startOscilloscope">📡 Start Oscilloscope</button>
+                        <span id="connectionStatus" class="connection-status disconnected" style="margin-left: 15px;">Disconnected</span>
+                    </div>
+                    <canvas id="oscilloscope-chart"></canvas>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -333,7 +368,13 @@
         let backgroundLogging = false; // Continue logging when tab is hidden
         let historyData = [];
         let maxHistoryPoints = 5000; // Keep last 5000 measurements
-        let frequencyChart, voltageChart;
+        let frequencyChart, voltageChart, oscilloscopeChart;
+        
+        // WebSocket oscilloscope variables
+        let websocket = null;
+        let oscilloscopeActive = false;
+        let oscilloscopeData = [];
+        let maxOscilloscopePoints = 200; // Show last 200ms of data (at 1kHz)
         
         // Mains standards configuration
         let mainsConfig = {
@@ -501,6 +542,58 @@
                             },
                             min: mainsConfig.voltageRange.min,
                             max: mainsConfig.voltageRange.max
+                        }
+                    }
+                }
+            });
+            
+            // Initialize oscilloscope chart
+            const ctx3 = document.getElementById('oscilloscope-chart').getContext('2d');
+            oscilloscopeChart = new Chart(ctx3, {
+                type: 'line',
+                data: {
+                    datasets: [{
+                        label: 'Voltage (mV)',
+                        data: [],
+                        borderColor: '#007bff',
+                        backgroundColor: 'rgba(0, 123, 255, 0.1)',
+                        tension: 0,
+                        pointRadius: 0,
+                        borderWidth: 1,
+                        fill: false,
+                        spanGaps: false
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false, // Disable animations for real-time performance
+                    interaction: {
+                        intersect: false,
+                        mode: 'index'
+                    },
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            title: {
+                                display: true,
+                                text: 'Time (ms)'
+                            },
+                            min: 0,
+                            max: 200 // 200ms window
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Voltage (mV)'
+                            },
+                            min: -100,
+                            max: 100
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
                         }
                     }
                 }
@@ -720,6 +813,105 @@
                 }
             }
         });
+        
+        // WebSocket functionality
+        function connectWebSocket() {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                return; // Already connected
+            }
+            
+            websocket = new WebSocket('ws://' + window.location.host + '/ws');
+            oscilloscopeActive = true;
+            const startTime = Date.now();
+            
+            websocket.onopen = function() {
+                console.log('WebSocket connected');
+                document.getElementById('connectionStatus').textContent = 'Connected';
+                document.getElementById('connectionStatus').className = 'connection-status connected';
+                document.getElementById('startOscilloscope').textContent = '⏹️ Stop Oscilloscope';
+            };
+            
+            websocket.onmessage = function(event) {
+                if (!oscilloscopeActive) return;
+                
+                try {
+                    const data = JSON.parse(event.data);
+                    updateOscilloscope(data.voltage, data.timestamp);
+                } catch (e) {
+                    console.error('Error parsing WebSocket data:', e);
+                }
+            };
+            
+            websocket.onclose = function() {
+                console.log('WebSocket disconnected');
+                document.getElementById('connectionStatus').textContent = 'Disconnected';
+                document.getElementById('connectionStatus').className = 'connection-status disconnected';
+                document.getElementById('startOscilloscope').textContent = '📡 Start Oscilloscope';
+                oscilloscopeActive = false;
+            };
+            
+            websocket.onerror = function(error) {
+                console.error('WebSocket error:', error);
+                document.getElementById('connectionStatus').textContent = 'Error';
+                document.getElementById('connectionStatus').className = 'connection-status error';
+            };
+        }
+        
+        function disconnectWebSocket() {
+            if (websocket) {
+                oscilloscopeActive = false;
+                websocket.close();
+                websocket = null;
+            }
+        }
+        
+        function toggleOscilloscope() {
+            if (oscilloscopeActive) {
+                disconnectWebSocket();
+            } else {
+                connectWebSocket();
+            }
+        }
+        
+        function updateOscilloscope(voltageValue, timestamp) {
+            if (!oscilloscopeChart || !oscilloscopeActive) return;
+            
+            // Add new data point using timestamp as x-axis
+            oscilloscopeData.push({
+                x: timestamp,
+                y: voltageValue
+            });
+            
+            // Keep only recent data points (200ms window at 1kHz = ~200 points)
+            if (oscilloscopeData.length > maxOscilloscopePoints) {
+                oscilloscopeData.shift();
+            }
+            
+            // Update chart data
+            oscilloscopeChart.data.datasets[0].data = oscilloscopeData.slice();
+            
+            // Auto-scale x-axis to show last 200ms
+            if (oscilloscopeData.length > 0) {
+                const latestTime = oscilloscopeData[oscilloscopeData.length - 1].x;
+                oscilloscopeChart.options.scales.x.min = latestTime - 200;
+                oscilloscopeChart.options.scales.x.max = latestTime;
+            }
+            
+            // Auto-scale y-axis based on current data
+            if (oscilloscopeData.length > 0) {
+                const voltages = oscilloscopeData.map(point => point.y);
+                const minVoltage = Math.min(...voltages);
+                const maxVoltage = Math.max(...voltages);
+                const range = maxVoltage - minVoltage;
+                const padding = Math.max(range * 0.1, 10); // 10% padding or minimum 10mV
+                
+                oscilloscopeChart.options.scales.y.min = minVoltage - padding;
+                oscilloscopeChart.options.scales.y.max = maxVoltage + padding;
+            }
+            
+            // Update chart
+            oscilloscopeChart.update('none'); // 'none' mode for better performance
+        }
     </script>
 </body>
 </html>

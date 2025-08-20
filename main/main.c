@@ -5,6 +5,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/queue.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -41,6 +42,11 @@ static const char *TAG = "ADC_MONITOR";
 #define FILTER_SIZE                 5                   // Moving average filter size (5 samples)
 #define FILTER_ALPHA                0.1f               // Low-pass filter coefficient (0.1 = heavy filtering)
 
+// WebSocket oscilloscope configuration
+#define WS_SAMPLE_RATE_HZ           1000                // WebSocket data rate (1kHz for oscilloscope)
+#define WS_BUFFER_SIZE              200                 // WebSocket buffer size (200ms of data at 1kHz)
+#define WS_DECIMATION_FACTOR        10                  // Send every 10th sample (10kHz -> 1kHz)
+
 // Dual buffer system - now stores voltage values in mV
 static float voltage_buffer_a[BUFFER_SIZE];
 static float voltage_buffer_b[BUFFER_SIZE];
@@ -63,6 +69,18 @@ static bool adc_calibrated = false;
 // Web server handle
 static httpd_handle_t server = NULL;
 
+// WebSocket oscilloscope variables
+static float ws_buffer[WS_BUFFER_SIZE];         // Circular buffer for WebSocket data
+static volatile uint32_t ws_buffer_index = 0;   // Current position in WebSocket buffer
+static volatile uint32_t ws_decimation_counter = 0; // Counter for decimation
+static QueueHandle_t ws_data_queue;             // Queue for WebSocket data transmission
+static bool ws_client_connected = false;        // WebSocket client connection status
+
+// WebSocket data packet structure
+typedef struct {
+    float voltage_mv;
+    uint32_t timestamp_us;
+} ws_data_packet_t;
 
 // Synchronization
 static SemaphoreHandle_t buffer_mutex;
@@ -100,6 +118,8 @@ static void calculate_statistics(const float *voltage_buffer, adc_statistics_t *
 static void wifi_init_softap(void);
 static esp_err_t root_get_handler(httpd_req_t *req);
 static esp_err_t api_stats_get_handler(httpd_req_t *req);
+static esp_err_t ws_handler(httpd_req_t *req);
+static void ws_data_task(void *pvParameters);
 static httpd_handle_t start_webserver(void);
 
 void app_main(void)
@@ -119,8 +139,9 @@ void app_main(void)
     // Create synchronization primitives
     buffer_mutex = xSemaphoreCreateMutex();
     processing_semaphore = xSemaphoreCreateBinary();
+    ws_data_queue = xQueueCreate(50, sizeof(ws_data_packet_t)); // Queue for 50 WebSocket packets
     
-    if (buffer_mutex == NULL || processing_semaphore == NULL) {
+    if (buffer_mutex == NULL || processing_semaphore == NULL || ws_data_queue == NULL) {
         ESP_LOGE(TAG, "Failed to create synchronization primitives");
         return;
     }
@@ -146,6 +167,9 @@ void app_main(void)
 
     // Create processing task
     xTaskCreate(adc_processing_task, "adc_processing", 4096, NULL, 5, NULL);
+    
+    // Create WebSocket data transmission task
+    xTaskCreate(ws_data_task, "ws_data", 4096, NULL, 4, NULL);
 
     // Create and start timer for ADC sampling
     esp_timer_create_args_t timer_args = {
@@ -245,6 +269,22 @@ static void IRAM_ATTR adc_timer_callback(void* arg)
     
     // Store filtered voltage sample in current buffer
     ((float*)current_voltage_buffer)[buffer_index] = filtered_voltage;
+    
+    // WebSocket oscilloscope data collection (decimated)
+    ws_decimation_counter++;
+    if (ws_decimation_counter >= WS_DECIMATION_FACTOR && ws_client_connected) {
+        ws_decimation_counter = 0;
+        
+        // Create WebSocket data packet
+        ws_data_packet_t packet = {
+            .voltage_mv = filtered_voltage,
+            .timestamp_us = esp_timer_get_time()
+        };
+        
+        // Send to WebSocket queue (non-blocking)
+        xQueueSendFromISR(ws_data_queue, &packet, NULL);
+    }
+    
     buffer_index++;
     
     // Check if buffer is full
@@ -480,6 +520,103 @@ static esp_err_t api_stats_get_handler(httpd_req_t *req)
     return httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
 }
 
+/*---------------------------------------------------------------
+        WebSocket Handler
+---------------------------------------------------------------*/
+static esp_err_t ws_handler(httpd_req_t *req)
+{
+    if (req->method == HTTP_GET) {
+        ESP_LOGI(TAG, "WebSocket handshake initiated");
+        ws_client_connected = true;
+        return ESP_OK;
+    }
+    
+    httpd_ws_frame_t ws_pkt;
+    uint8_t *buf = NULL;
+    memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
+    
+    // Receive WebSocket frame
+    esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, 0);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "httpd_ws_recv_frame failed to get frame len with %d", ret);
+        ws_client_connected = false;
+        return ret;
+    }
+    
+    if (ws_pkt.len) {
+        buf = calloc(1, ws_pkt.len + 1);
+        if (buf == NULL) {
+            ESP_LOGE(TAG, "Failed to calloc memory for buf");
+            return ESP_ERR_NO_MEM;
+        }
+        ws_pkt.payload = buf;
+        ret = httpd_ws_recv_frame(req, &ws_pkt, ws_pkt.len);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "httpd_ws_recv_frame failed with %d", ret);
+            free(buf);
+            ws_client_connected = false;
+            return ret;
+        }
+    }
+    
+    // Handle different frame types
+    if (ws_pkt.type == HTTPD_WS_TYPE_TEXT) {
+        ESP_LOGI(TAG, "Received packet with message: %s", ws_pkt.payload);
+    } else if (ws_pkt.type == HTTPD_WS_TYPE_CLOSE) {
+        ESP_LOGI(TAG, "WebSocket connection closed");
+        ws_client_connected = false;
+    }
+    
+    if (buf) {
+        free(buf);
+    }
+    return ESP_OK;
+}
+
+/*---------------------------------------------------------------
+        WebSocket Data Transmission Task
+---------------------------------------------------------------*/
+static void ws_data_task(void *pvParameters)
+{
+    ws_data_packet_t packet;
+    char json_buffer[128];
+    httpd_ws_frame_t ws_pkt;
+    
+    while (1) {
+        // Wait for data from queue
+        if (xQueueReceive(ws_data_queue, &packet, portMAX_DELAY) == pdTRUE) {
+            if (ws_client_connected && server != NULL) {
+                // Format data as JSON
+                snprintf(json_buffer, sizeof(json_buffer),
+                    "{\"voltage\":%.2f,\"timestamp\":%lu}",
+                    packet.voltage_mv, 
+                    (unsigned long)(packet.timestamp_us / 1000) // Convert to milliseconds
+                );
+                
+                // Prepare WebSocket frame
+                memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
+                ws_pkt.payload = (uint8_t*)json_buffer;
+                ws_pkt.len = strlen(json_buffer);
+                ws_pkt.type = HTTPD_WS_TYPE_TEXT;
+                
+                // Send to all WebSocket clients
+                size_t clients = 10;
+                int client_fds[10];
+                esp_err_t ret = httpd_get_client_list(server, &clients, client_fds);
+                
+                if (ret == ESP_OK) {
+                    for (size_t i = 0; i < clients; ++i) {
+                        int client_info = httpd_ws_get_fd_info(server, client_fds[i]);
+                        if (client_info == HTTPD_WS_CLIENT_WEBSOCKET) {
+                            httpd_ws_send_frame_async(server, client_fds[i], &ws_pkt);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 static httpd_handle_t start_webserver(void)
 {
     httpd_handle_t server = NULL;
@@ -505,6 +642,16 @@ static httpd_handle_t start_webserver(void)
             .user_ctx  = NULL
         };
         httpd_register_uri_handler(server, &api_stats);
+
+        // WebSocket oscilloscope handler
+        httpd_uri_t ws = {
+            .uri        = "/ws",
+            .method     = HTTP_GET,
+            .handler    = ws_handler,
+            .user_ctx   = NULL,
+            .is_websocket = true
+        };
+        httpd_register_uri_handler(server, &ws);
 
         return server;
     }
