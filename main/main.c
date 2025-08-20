@@ -256,29 +256,38 @@ static void calculate_statistics(const float *voltage_buffer, adc_statistics_t *
     // Calculate peak-to-peak voltage
     stats->peak_to_peak_mv = max_voltage - min_voltage;
     
-    // Second pass: count zero crossings for frequency measurement
+    // Second pass: count zero crossings for frequency measurement with Schmitt trigger
     uint32_t zero_crossings = 0;
     uint32_t first_crossing_index = 0;
     uint32_t last_crossing_index = 0;
+    uint32_t last_crossing_sample = 0;  // Track last crossing position for Schmitt trigger
     bool above_mean = (voltage_buffer[0] > stats->mean_voltage_mv);
     bool found_first_crossing = false;
+    
+    const uint32_t MIN_CROSSING_INTERVAL = 25;  // Minimum samples between crossings (Schmitt trigger)
     
     for (int i = 1; i < BUFFER_SIZE; i++) {
         bool current_above_mean = (voltage_buffer[i] > stats->mean_voltage_mv);
         
         // Detect crossing: state changed from above to below or below to above
         if (current_above_mean != above_mean) {
-            zero_crossings++;
-            
-            // Record first crossing index
-            if (!found_first_crossing) {
-                first_crossing_index = i;
-                found_first_crossing = true;
+            // Apply Schmitt trigger: only count crossing if enough samples have passed since last crossing
+            if (zero_crossings == 0 || (i - last_crossing_sample) >= MIN_CROSSING_INTERVAL) {
+                zero_crossings++;
+                last_crossing_sample = i;
+                
+                // Record first crossing index
+                if (!found_first_crossing) {
+                    first_crossing_index = i;
+                    found_first_crossing = true;
+                }
+                
+                // Always update last crossing index
+                last_crossing_index = i;
+                above_mean = current_above_mean;
             }
-            
-            // Always update last crossing index
-            last_crossing_index = i;
-            above_mean = current_above_mean;
+            // If crossing is too soon after last one, ignore it but don't update above_mean
+            // This prevents the state from changing until a valid crossing occurs
         }
     }
     
