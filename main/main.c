@@ -77,6 +77,10 @@ typedef struct {
 // Latest statistics for web display
 static adc_statistics_t latest_stats = {0};
 
+// External references to embedded files
+extern const uint8_t index_html_start[] asm("_binary_index_html_start");
+extern const uint8_t index_html_end[]   asm("_binary_index_html_end");
+
 // Function prototypes
 static bool example_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle);
 static void example_adc_calibration_deinit(adc_cali_handle_t handle);
@@ -399,85 +403,9 @@ static void wifi_init_softap(void)
 ---------------------------------------------------------------*/
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
-    const char* html_page = 
-        "<!DOCTYPE html>"
-        "<html><head>"
-        "<title>Mains Monitor</title>"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        "<style>"
-        "body { font-family: Arial, sans-serif; margin: 20px; background-color: #f0f0f0; }"
-        ".container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }"
-        "h1 { color: #333; text-align: center; }"
-        ".stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; margin: 20px 0; }"
-        ".stat-card { background: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 4px solid #007bff; }"
-        ".stat-value { font-size: 24px; font-weight: bold; color: #007bff; }"
-        ".stat-label { color: #666; font-size: 14px; margin-top: 5px; }"
-        ".frequency-card { border-left-color: #28a745; }"
-        ".frequency-card .stat-value { color: #28a745; }"
-        ".voltage-card { border-left-color: #dc3545; }"
-        ".voltage-card .stat-value { color: #dc3545; }"
-        ".mains-card { border-left-color: #ffc107; }"
-        ".mains-card .stat-value { color: #e67e22; }"
-        ".refresh-btn { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin: 10px auto; display: block; }"
-        ".refresh-btn:hover { background: #0056b3; }"
-        "</style>"
-        "<script>"
-        "function updateStats() {"
-        "  fetch('/api/stats')"
-        "    .then(response => response.json())"
-        "    .then(data => {"
-        "      document.getElementById('dc-bias').textContent = data.dc_bias.toFixed(1);"
-        "      document.getElementById('ac-rms').textContent = data.ac_rms.toFixed(1);"
-        "      document.getElementById('peak-peak').textContent = data.peak_peak.toFixed(1);"
-        "      document.getElementById('frequency').textContent = data.frequency.toFixed(2);"
-        "      document.getElementById('zero-crossings').textContent = data.zero_crossings;"
-        "      document.getElementById('mains-rms').textContent = data.mains_rms.toFixed(1);"
-        "      document.getElementById('mains-peak').textContent = data.mains_peak.toFixed(1);"
-        "    })"
-        "    .catch(err => console.error('Error:', err));"
-        "}"
-        "setInterval(updateStats, 1000);"
-        "window.onload = updateStats;"
-        "</script>"
-        "</head><body>"
-        "<div class=\"container\">"
-        "<h1>🔌 Mains Voltage Monitor</h1>"
-        "<div class=\"stats-grid\">"
-        "<div class=\"stat-card\">"
-        "<div class=\"stat-value\" id=\"dc-bias\">--</div>"
-        "<div class=\"stat-label\">DC Bias (mV)</div>"
-        "</div>"
-        "<div class=\"stat-card voltage-card\">"
-        "<div class=\"stat-value\" id=\"ac-rms\">--</div>"
-        "<div class=\"stat-label\">AC RMS (mV)</div>"
-        "</div>"
-        "<div class=\"stat-card voltage-card\">"
-        "<div class=\"stat-value\" id=\"peak-peak\">--</div>"
-        "<div class=\"stat-label\">Peak-to-Peak (mV)</div>"
-        "</div>"
-        "<div class=\"stat-card frequency-card\">"
-        "<div class=\"stat-value\" id=\"frequency\">--</div>"
-        "<div class=\"stat-label\">Frequency (Hz)</div>"
-        "</div>"
-        "<div class=\"stat-card frequency-card\">"
-        "<div class=\"stat-value\" id=\"zero-crossings\">--</div>"
-        "<div class=\"stat-label\">Zero Crossings</div>"
-        "</div>"
-        "<div class=\"stat-card mains-card\">"
-        "<div class=\"stat-value\" id=\"mains-rms\">--</div>"
-        "<div class=\"stat-label\">Mains AC RMS (V)</div>"
-        "</div>"
-        "<div class=\"stat-card mains-card\">"
-        "<div class=\"stat-value\" id=\"mains-peak\">--</div>"
-        "<div class=\"stat-label\">Mains Peak-to-Peak (V)</div>"
-        "</div>"
-        "</div>"
-        "<button class=\"refresh-btn\" onclick=\"updateStats()\">🔄 Refresh Now</button>"
-        "</div>"
-        "</body></html>";
-
     httpd_resp_set_type(req, "text/html");
-    return httpd_resp_send(req, html_page, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send(req, (const char*)index_html_start, index_html_end - index_html_start);
+    return ESP_OK;
 }
 
 static esp_err_t api_stats_get_handler(httpd_req_t *req)
