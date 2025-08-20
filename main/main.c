@@ -37,6 +37,10 @@ static const char *TAG = "ADC_MONITOR";
 #define STEPDOWN_RATIO              11.0f              // 11:1 voltage divider
 #define TOTAL_SCALING               (ISOLATION_RATIO * STEPDOWN_RATIO)  // Total scaling factor
 
+// ADC Filtering configuration
+#define FILTER_SIZE                 5                   // Moving average filter size (5 samples)
+#define FILTER_ALPHA                0.1f               // Low-pass filter coefficient (0.1 = heavy filtering)
+
 // Dual buffer system - now stores voltage values in mV
 static float voltage_buffer_a[BUFFER_SIZE];
 static float voltage_buffer_b[BUFFER_SIZE];
@@ -44,6 +48,12 @@ static volatile float *current_voltage_buffer = voltage_buffer_a;
 static volatile float *processing_voltage_buffer = NULL;
 static volatile uint32_t buffer_index = 0;
 static volatile bool buffer_ready_for_processing = false;
+
+// ADC filtering variables
+static float filter_buffer[FILTER_SIZE] = {0};  // Circular buffer for moving average
+static uint32_t filter_index = 0;               // Current position in filter buffer
+static float filter_sum = 0.0f;                 // Running sum for moving average
+static float last_filtered_value = 0.0f;        // For exponential smoothing
 
 // ADC handles
 static adc_oneshot_unit_handle_t adc1_handle;
@@ -131,7 +141,8 @@ void app_main(void)
     //-------------ADC1 Calibration Init---------------//
     adc_calibrated = example_adc_calibration_init(ADC_UNIT_1, EXAMPLE_ADC1_CHAN0, EXAMPLE_ADC_ATTEN, &adc1_cali_handle);
 
-    ESP_LOGI(TAG, "ADC initialization complete. Starting continuous sampling at %d Hz...", SAMPLE_RATE_HZ);
+    ESP_LOGI(TAG, "ADC initialization complete. Starting continuous sampling at %d Hz with filtering...", SAMPLE_RATE_HZ);
+    ESP_LOGI(TAG, "Filter configuration: Moving Average=%d samples, Exponential Alpha=%.2f", FILTER_SIZE, FILTER_ALPHA);
 
     // Create processing task
     xTaskCreate(adc_processing_task, "adc_processing", 4096, NULL, 5, NULL);
@@ -173,6 +184,32 @@ void app_main(void)
 }
 
 /*---------------------------------------------------------------
+        ADC Filtering Functions
+---------------------------------------------------------------*/
+static float IRAM_ATTR apply_moving_average_filter(float new_value)
+{
+    // Remove oldest value from sum
+    filter_sum -= filter_buffer[filter_index];
+    
+    // Add new value to buffer and sum
+    filter_buffer[filter_index] = new_value;
+    filter_sum += new_value;
+    
+    // Move to next position (circular buffer)
+    filter_index = (filter_index + 1) % FILTER_SIZE;
+    
+    // Return average
+    return filter_sum / FILTER_SIZE;
+}
+
+static float IRAM_ATTR apply_exponential_filter(float new_value)
+{
+    // Simple exponential smoothing: output = alpha * input + (1-alpha) * previous_output
+    last_filtered_value = FILTER_ALPHA * new_value + (1.0f - FILTER_ALPHA) * last_filtered_value;
+    return last_filtered_value;
+}
+
+/*---------------------------------------------------------------
         ADC Timer Callback - Called at 10kHz
 ---------------------------------------------------------------*/
 static void IRAM_ATTR adc_timer_callback(void* arg)
@@ -199,8 +236,15 @@ static void IRAM_ATTR adc_timer_callback(void* arg)
         voltage_mv = (float)adc_raw * 3300.0f / 4095.0f;
     }
     
-    // Store voltage sample in current buffer
-    ((float*)current_voltage_buffer)[buffer_index] = voltage_mv;
+    // Apply filtering to reduce noise
+    // First apply moving average to remove high-frequency noise
+    float filtered_voltage = apply_moving_average_filter(voltage_mv);
+    
+    // Then apply exponential smoothing for additional noise reduction
+    filtered_voltage = apply_exponential_filter(filtered_voltage);
+    
+    // Store filtered voltage sample in current buffer
+    ((float*)current_voltage_buffer)[buffer_index] = filtered_voltage;
     buffer_index++;
     
     // Check if buffer is full
