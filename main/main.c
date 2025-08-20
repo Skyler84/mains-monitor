@@ -54,6 +54,8 @@ typedef struct {
     float peak_to_peak_mv;          // Peak-to-peak voltage
     float ac_rms_voltage_scaled;    // AC RMS scaled to mains voltage
     float peak_to_peak_scaled;      // Peak-to-peak scaled to mains voltage
+    float frequency_hz;             // Measured frequency from zero crossings
+    uint32_t zero_crossings;        // Number of zero crossings detected
 } adc_statistics_t;
 
 // Function prototypes
@@ -110,7 +112,7 @@ void app_main(void)
     // Main task just monitors the system
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(5000));
-        ESP_LOGI(TAG, "System running... Buffer index: %lu", buffer_index);
+        // ESP_LOGI(TAG, "System running... Buffer index: %lu", buffer_index);
     }
 
     // Cleanup (never reached in this implementation)
@@ -199,6 +201,9 @@ static void adc_processing_task(void *pvParameters)
                 ESP_LOGI(TAG, "Min: %.1f mV, Max: %.1f mV, Peak-Peak: %.1f mV", 
                          stats.min_voltage_mv, stats.max_voltage_mv, stats.peak_to_peak_mv);
                 ESP_LOGI(TAG, "Standard Deviation: %.1f mV", stats.std_dev_voltage_mv);
+                ESP_LOGI(TAG, "--- Frequency Analysis ---");
+                ESP_LOGI(TAG, "Zero Crossings: %lu, Frequency: %.2f Hz", 
+                         stats.zero_crossings, stats.frequency_hz);
                 ESP_LOGI(TAG, "--- Scaled Mains Voltage ---");
                 ESP_LOGI(TAG, "AC RMS: %.1f V, Peak-Peak: %.1f V", 
                          stats.ac_rms_voltage_scaled, stats.peak_to_peak_scaled);
@@ -217,11 +222,10 @@ static void calculate_statistics(const float *voltage_buffer, adc_statistics_t *
 {
     double sum = 0.0;
     double sum_squares = 0.0;
-    double ac_sum_squares = 0.0;
     float min_voltage = voltage_buffer[0];
     float max_voltage = voltage_buffer[0];
     
-    // Calculate statistics on voltage values
+    // First pass: calculate basic statistics
     for (int i = 0; i < BUFFER_SIZE; i++) {
         float voltage = voltage_buffer[i];
         sum += voltage;
@@ -251,6 +255,53 @@ static void calculate_statistics(const float *voltage_buffer, adc_statistics_t *
     
     // Calculate peak-to-peak voltage
     stats->peak_to_peak_mv = max_voltage - min_voltage;
+    
+    // Second pass: count zero crossings for frequency measurement
+    uint32_t zero_crossings = 0;
+    uint32_t first_crossing_index = 0;
+    uint32_t last_crossing_index = 0;
+    bool above_mean = (voltage_buffer[0] > stats->mean_voltage_mv);
+    bool found_first_crossing = false;
+    
+    for (int i = 1; i < BUFFER_SIZE; i++) {
+        bool current_above_mean = (voltage_buffer[i] > stats->mean_voltage_mv);
+        
+        // Detect crossing: state changed from above to below or below to above
+        if (current_above_mean != above_mean) {
+            zero_crossings++;
+            
+            // Record first crossing index
+            if (!found_first_crossing) {
+                first_crossing_index = i;
+                found_first_crossing = true;
+            }
+            
+            // Always update last crossing index
+            last_crossing_index = i;
+            above_mean = current_above_mean;
+        }
+    }
+    
+    stats->zero_crossings = zero_crossings;
+    
+    // Calculate frequency from zero crossings using actual time between crossings
+    if (zero_crossings >= 2 && found_first_crossing) {
+        // Calculate actual time between first and last crossing
+        uint32_t crossing_span_samples = last_crossing_index - first_crossing_index;
+        float crossing_span_seconds = (float)crossing_span_samples / (float)SAMPLE_RATE_HZ;
+        
+        // Number of complete cycles in the crossing span
+        // Each cycle has 2 zero crossings, so (zero_crossings - 1) gives us the crossings between first and last
+        float cycles_in_span = (float)(zero_crossings - 1) / 2.0f;
+        
+        if (cycles_in_span > 0.0f && crossing_span_seconds > 0.0f) {
+            stats->frequency_hz = cycles_in_span / crossing_span_seconds;
+        } else {
+            stats->frequency_hz = 0.0f;
+        }
+    } else {
+        stats->frequency_hz = 0.0f; // Not enough crossings to determine frequency
+    }
     
     // Scale to mains voltage
     stats->ac_rms_voltage_scaled = (stats->ac_rms_voltage_mv / 1000.0f) * TOTAL_SCALING;
