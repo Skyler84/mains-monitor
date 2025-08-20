@@ -1,3 +1,6 @@
+#include "main.h"
+#include "wifi.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,41 +21,6 @@
 #include "nvs_flash.h"
 
 static const char *TAG = "ADC_MONITOR";
-
-#define EXAMPLE_ADC1_CHAN0          ADC_CHANNEL_0
-#define EXAMPLE_ADC_ATTEN           ADC_ATTEN_DB_12
-
-// Buffer configuration
-#define BUFFER_SIZE                 10000
-#define SAMPLE_RATE_HZ              10000
-#define SAMPLE_PERIOD_US            (1000000 / SAMPLE_RATE_HZ)  // 100 microseconds
-
-// WiFi AP configuration
-#define WIFI_SSID               "mains-monitor"
-#define WIFI_PASS               "mains-monitor-password"
-#define WIFI_CHANNEL            1
-#define MAX_STA_CONN            4
-
-// WiFi configuration structure
-typedef struct {
-    char ssid[32];
-    char password[64];
-    uint8_t mode; // 0 = AP, 1 = Station
-} custom_wifi_config_t;
-
-// Voltage scaling configuration
-#define ISOLATION_RATIO             (242.5f / 8.4f)    // 242.5V to 8.4V isolation transformer
-#define STEPDOWN_RATIO              11.0f              // 11:1 voltage divider
-#define TOTAL_SCALING               (ISOLATION_RATIO * STEPDOWN_RATIO)  // Total scaling factor
-
-// ADC Filtering configuration
-#define FILTER_SIZE                 5                   // Moving average filter size (5 samples)
-#define FILTER_ALPHA                0.1f               // Low-pass filter coefficient (0.1 = heavy filtering)
-
-// WebSocket oscilloscope configuration
-#define WS_SAMPLE_RATE_HZ           1000                // WebSocket data rate (1kHz for oscilloscope)
-#define WS_BUFFER_SIZE              200                 // WebSocket buffer size (200ms of data at 1kHz)
-#define WS_DECIMATION_FACTOR        10                  // Send every 10th sample (10kHz -> 1kHz)
 
 // Dual buffer system - now stores voltage values in mV
 static float voltage_buffer_a[BUFFER_SIZE];
@@ -77,24 +45,10 @@ static bool adc_calibrated = false;
 static httpd_handle_t server = NULL;
 
 // WebSocket oscilloscope variables
-static float ws_buffer[WS_BUFFER_SIZE];         // Circular buffer for WebSocket data
 static volatile uint32_t ws_buffer_index = 0;   // Current position in WebSocket buffer
 static volatile uint32_t ws_decimation_counter = 0; // Counter for decimation
 static QueueHandle_t ws_data_queue;             // Queue for WebSocket data transmission
 static bool ws_client_connected = false;        // WebSocket client connection status
-
-// WebSocket data packet structure
-typedef struct {
-    float voltage_v;        // Mains voltage in volts
-    uint32_t timestamp_us;
-} ws_data_packet_t;
-
-// WebSocket batch structure for sending multiple samples at once
-#define WS_BATCH_SIZE 100
-typedef struct {
-    ws_data_packet_t samples[WS_BATCH_SIZE];
-    size_t count;
-} ws_batch_packet_t;
 
 // WebSocket batch variables
 static ws_batch_packet_t current_batch = {0};
@@ -104,31 +58,9 @@ static size_t batch_index = 0;
 static SemaphoreHandle_t buffer_mutex;
 static SemaphoreHandle_t processing_semaphore;
 
-// Statistics structure - all values in voltage domain
-typedef struct {
-    float mean_voltage_mv;           // DC bias voltage
-    float rms_voltage_mv;           // Total RMS voltage
-    float ac_rms_voltage_mv;        // AC RMS voltage (DC bias removed)
-    float std_dev_voltage_mv;       // Standard deviation in mV
-    float min_voltage_mv;           // Minimum voltage
-    float max_voltage_mv;           // Maximum voltage
-    float peak_to_peak_mv;          // Peak-to-peak voltage
-    float ac_rms_voltage_scaled;    // AC RMS scaled to mains voltage
-    float peak_to_peak_scaled;      // Peak-to-peak scaled to mains voltage
-    float frequency_hz;             // Measured frequency from zero crossings
-    uint32_t zero_crossings;        // Number of zero crossings detected
-} adc_statistics_t;
-
 
 // Latest statistics for web display
 static adc_statistics_t latest_stats = {0};
-
-// WiFi configuration
-static custom_wifi_config_t current_wifi_config = {
-    .ssid = WIFI_SSID,
-    .password = WIFI_PASS,
-    .mode = 0 // Default to AP mode
-};
 
 // External references to embedded files
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
@@ -140,11 +72,6 @@ static void example_adc_calibration_deinit(adc_cali_handle_t handle);
 static void adc_timer_callback(void* arg);
 static void adc_processing_task(void *pvParameters);
 static void calculate_statistics(const float *voltage_buffer, adc_statistics_t *stats);
-static void wifi_init_softap(void);
-static void wifi_init_station(void);
-static void wifi_load_config(void);
-static void wifi_save_config(void);
-static void wifi_apply_config(void);
 static esp_err_t root_get_handler(httpd_req_t *req);
 static esp_err_t api_stats_get_handler(httpd_req_t *req);
 static esp_err_t api_wifi_get_handler(httpd_req_t *req);
@@ -224,7 +151,8 @@ void app_main(void)
         if (current_wifi_config.mode == 0) {
             ESP_LOGI(TAG, "Web server started in AP mode. Connect to WiFi '%s' and browse to http://192.168.4.1", current_wifi_config.ssid);
         } else {
-            ESP_LOGI(TAG, "Web server started in Station mode. Check your router for the assigned IP address.");
+            ESP_LOGI(TAG, "Web server started in Station mode. Attempting to connect to WiFi '%s'...", current_wifi_config.ssid);
+            ESP_LOGI(TAG, "The IP address will be displayed once connected. Then browse to that IP address.");
         }
     }
 
@@ -374,20 +302,20 @@ static void adc_processing_task(void *pvParameters)
                 latest_stats = stats;
                 
                 // Print statistics - all in voltage domain
-                ESP_LOGI(TAG, "=== Voltage Statistics (10000 samples) ===");
-                ESP_LOGI(TAG, "DC Bias: %.1f mV", stats.mean_voltage_mv);
-                ESP_LOGI(TAG, "Total RMS: %.1f mV, AC RMS: %.1f mV", 
-                         stats.rms_voltage_mv, stats.ac_rms_voltage_mv);
-                ESP_LOGI(TAG, "Min: %.1f mV, Max: %.1f mV, Peak-Peak: %.1f mV", 
-                         stats.min_voltage_mv, stats.max_voltage_mv, stats.peak_to_peak_mv);
-                ESP_LOGI(TAG, "Standard Deviation: %.1f mV", stats.std_dev_voltage_mv);
-                ESP_LOGI(TAG, "--- Frequency Analysis ---");
-                ESP_LOGI(TAG, "Zero Crossings: %lu, Frequency: %.2f Hz", 
-                         stats.zero_crossings, stats.frequency_hz);
-                ESP_LOGI(TAG, "--- Scaled Mains Voltage ---");
-                ESP_LOGI(TAG, "AC RMS: %.1f V, Peak-Peak: %.1f V", 
-                         stats.ac_rms_voltage_scaled, stats.peak_to_peak_scaled);
-                ESP_LOGI(TAG, "=====================================");
+                // ESP_LOGI(TAG, "=== Voltage Statistics (10000 samples) ===");
+                // ESP_LOGI(TAG, "DC Bias: %.1f mV", stats.mean_voltage_mv);
+                // ESP_LOGI(TAG, "Total RMS: %.1f mV, AC RMS: %.1f mV", 
+                //          stats.rms_voltage_mv, stats.ac_rms_voltage_mv);
+                // ESP_LOGI(TAG, "Min: %.1f mV, Max: %.1f mV, Peak-Peak: %.1f mV", 
+                //          stats.min_voltage_mv, stats.max_voltage_mv, stats.peak_to_peak_mv);
+                // ESP_LOGI(TAG, "Standard Deviation: %.1f mV", stats.std_dev_voltage_mv);
+                // ESP_LOGI(TAG, "--- Frequency Analysis ---");
+                // ESP_LOGI(TAG, "Zero Crossings: %lu, Frequency: %.2f Hz", 
+                //          stats.zero_crossings, stats.frequency_hz);
+                // ESP_LOGI(TAG, "--- Scaled Mains Voltage ---");
+                // ESP_LOGI(TAG, "AC RMS: %.1f V, Peak-Peak: %.1f V", 
+                //          stats.ac_rms_voltage_scaled, stats.peak_to_peak_scaled);
+                // ESP_LOGI(TAG, "=====================================");
                 
                 buffer_ready_for_processing = false;
             }
@@ -495,131 +423,6 @@ static void calculate_statistics(const float *voltage_buffer, adc_statistics_t *
     // Scale to mains voltage
     stats->ac_rms_voltage_scaled = (stats->ac_rms_voltage_mv / 1000.0f) * TOTAL_SCALING;
     stats->peak_to_peak_scaled = (stats->peak_to_peak_mv / 1000.0f) * TOTAL_SCALING;
-}
-
-/*---------------------------------------------------------------
-        WiFi Configuration Functions
----------------------------------------------------------------*/
-static void wifi_load_config(void)
-{
-    nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open("wifi_config", NVS_READONLY, &nvs_handle);
-    
-    if (err == ESP_OK) {
-        size_t required_size;
-        
-        // Load SSID
-        required_size = sizeof(current_wifi_config.ssid);
-        err = nvs_get_str(nvs_handle, "ssid", current_wifi_config.ssid, &required_size);
-        if (err != ESP_OK) {
-            strcpy(current_wifi_config.ssid, WIFI_SSID);
-        }
-        
-        // Load password
-        required_size = sizeof(current_wifi_config.password);
-        err = nvs_get_str(nvs_handle, "password", current_wifi_config.password, &required_size);
-        if (err != ESP_OK) {
-            strcpy(current_wifi_config.password, WIFI_PASS);
-        }
-        
-        // Load mode
-        err = nvs_get_u8(nvs_handle, "mode", &current_wifi_config.mode);
-        if (err != ESP_OK) {
-            current_wifi_config.mode = 0; // Default to AP mode
-        }
-        
-        nvs_close(nvs_handle);
-        ESP_LOGI(TAG, "WiFi config loaded: SSID=%s, Mode=%s", 
-                 current_wifi_config.ssid, 
-                 current_wifi_config.mode == 0 ? "AP" : "Station");
-    } else {
-        ESP_LOGI(TAG, "WiFi config not found, using defaults");
-        strcpy(current_wifi_config.ssid, WIFI_SSID);
-        strcpy(current_wifi_config.password, WIFI_PASS);
-        current_wifi_config.mode = 0;
-    }
-}
-
-static void wifi_save_config(void)
-{
-    nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open("wifi_config", NVS_READWRITE, &nvs_handle);
-    
-    if (err == ESP_OK) {
-        nvs_set_str(nvs_handle, "ssid", current_wifi_config.ssid);
-        nvs_set_str(nvs_handle, "password", current_wifi_config.password);
-        nvs_set_u8(nvs_handle, "mode", current_wifi_config.mode);
-        nvs_commit(nvs_handle);
-        nvs_close(nvs_handle);
-        ESP_LOGI(TAG, "WiFi config saved");
-    } else {
-        ESP_LOGE(TAG, "Failed to save WiFi config");
-    }
-}
-
-static void wifi_apply_config(void)
-{
-    if (current_wifi_config.mode == 0) {
-        wifi_init_softap();
-    } else {
-        wifi_init_station();
-    }
-}
-
-/*---------------------------------------------------------------
-        WiFi Access Point Setup
----------------------------------------------------------------*/
-static void wifi_init_softap(void)
-{
-    esp_netif_create_default_wifi_ap();
-
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    wifi_config_t wifi_config = {
-        .ap = {
-            .ssid_len = strlen(current_wifi_config.ssid),
-            .channel = WIFI_CHANNEL,
-            .max_connection = MAX_STA_CONN,
-            .authmode = WIFI_AUTH_WPA_WPA2_PSK
-        },
-    };
-    
-    strcpy((char*)wifi_config.ap.ssid, current_wifi_config.ssid);
-    strcpy((char*)wifi_config.ap.password, current_wifi_config.password);
-    
-    if (strlen(current_wifi_config.password) == 0) {
-        wifi_config.ap.authmode = WIFI_AUTH_OPEN;
-    }
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    ESP_LOGI(TAG, "WiFi AP started. SSID: %s", current_wifi_config.ssid);
-}
-
-static void wifi_init_station(void)
-{
-    esp_netif_create_default_wifi_sta();
-
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    wifi_config_t wifi_config = {
-        .sta = {
-            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
-        },
-    };
-    
-    strcpy((char*)wifi_config.sta.ssid, current_wifi_config.ssid);
-    strcpy((char*)wifi_config.sta.password, current_wifi_config.password);
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    ESP_LOGI(TAG, "WiFi Station mode started. Connecting to SSID: %s", current_wifi_config.ssid);
 }
 
 /*---------------------------------------------------------------

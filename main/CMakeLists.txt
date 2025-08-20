@@ -1,3 +1,10 @@
-idf_component_register(SRCS "main.c"
-                    INCLUDE_DIRS "."
-                    EMBED_FILES "web/index.html")
+idf_component_register(
+    SRCS 
+        "main.c"
+        "wifi.c"
+        "web/server.c"
+    INCLUDE_DIRS 
+        "."
+    EMBED_FILES 
+        "web/static/index.html"
+)
