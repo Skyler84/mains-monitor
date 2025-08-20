@@ -259,7 +259,7 @@
         let isLogging = false;
         let backgroundLogging = false; // Continue logging when tab is hidden
         let historyData = [];
-        let maxHistoryPoints = 500; // Keep last 500 measurements
+        let maxHistoryPoints = 5000; // Keep last 5000 measurements
         let frequencyChart, voltageChart;
         
         // Initialize charts
@@ -307,9 +307,7 @@
                             title: {
                                 display: true,
                                 text: 'Frequency (Hz)'
-                            },
-                            min: 49,
-                            max: 51
+                            }
                         }
                     },
                     plugins: {
