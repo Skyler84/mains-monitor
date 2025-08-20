@@ -78,7 +78,7 @@ static bool ws_client_connected = false;        // WebSocket client connection s
 
 // WebSocket data packet structure
 typedef struct {
-    float voltage_mv;
+    float voltage_v;        // Mains voltage in volts
     uint32_t timestamp_us;
 } ws_data_packet_t;
 
@@ -286,8 +286,14 @@ static void IRAM_ATTR adc_timer_callback(void* arg)
     if (ws_decimation_counter >= WS_DECIMATION_FACTOR && ws_client_connected) {
         ws_decimation_counter = 0;
         
+        // Remove DC bias from the filtered voltage before scaling
+        float ac_voltage_mv = filtered_voltage - latest_stats.mean_voltage_mv;
+        
+        // Scale AC voltage to mains voltage
+        float mains_voltage = (ac_voltage_mv / 1000.0f) * TOTAL_SCALING;
+        
         // Add sample to current batch
-        current_batch.samples[batch_index].voltage_mv = filtered_voltage;
+        current_batch.samples[batch_index].voltage_v = mains_voltage;
         current_batch.samples[batch_index].timestamp_us = esp_timer_get_time();
         batch_index++;
         
@@ -616,7 +622,7 @@ static void ws_data_task(void *pvParameters)
                     }
                     offset += snprintf(json_buffer + offset, sizeof(json_buffer) - offset,
                         "{\"voltage\":%.2f,\"timestamp\":%lu}",
-                        batch.samples[i].voltage_mv,
+                        batch.samples[i].voltage_v,
                         (unsigned long)(batch.samples[i].timestamp_us / 1000) // Convert to milliseconds
                     );
                 }

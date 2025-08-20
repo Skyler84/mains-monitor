@@ -375,6 +375,8 @@
         let oscilloscopeActive = false;
         let oscilloscopeData = [];
         let maxOscilloscopePoints = 200; // Show last 200ms of data (at 1kHz)
+
+        const RmsToPeakFactor = Math.sqrt(2) * 1.2; // Conversion factor from RMS to peak voltage
         
         // Mains standards configuration
         let mainsConfig = {
@@ -418,6 +420,14 @@
                 // Refresh charts
                 frequencyChart.update();
                 voltageChart.update();
+            }
+            
+            // Update oscilloscope chart Y-axis based on mains voltage
+            if (oscilloscopeChart) {
+                const peakVoltage = mainsConfig.voltage * RmsToPeakFactor; // Convert RMS to peak voltage
+                oscilloscopeChart.options.scales.y.min = -peakVoltage;
+                oscilloscopeChart.options.scales.y.max = peakVoltage;
+                oscilloscopeChart.update();
             }
             
             // Log the configuration change
@@ -553,7 +563,7 @@
                 type: 'line',
                 data: {
                     datasets: [{
-                        label: 'Voltage (mV)',
+                        label: 'AC Mains Voltage (V)',
                         data: [],
                         borderColor: '#007bff',
                         backgroundColor: 'rgba(0, 123, 255, 0.1)',
@@ -585,10 +595,10 @@
                         y: {
                             title: {
                                 display: true,
-                                text: 'Voltage (mV)'
+                                text: 'AC Mains Voltage (V)'
                             },
-                            min: -100,
-                            max: 100
+                            min: -(mainsConfig.voltage * RmsToPeakFactor),  // Dynamic range based on mains config
+                            max: (mainsConfig.voltage * RmsToPeakFactor)
                         }
                     },
                     plugins: {
@@ -918,7 +928,7 @@
             const minVoltage = Math.min(...voltages);
             const maxVoltage = Math.max(...voltages);
             const range = maxVoltage - minVoltage;
-            const padding = Math.max(range * 0.1, 10); // 10% padding or minimum 10mV
+            const padding = Math.max(range * 0.1, 50); // 10% padding or minimum 50V
             
             oscilloscopeChart.options.scales.y.min = minVoltage - padding;
             oscilloscopeChart.options.scales.y.max = maxVoltage + padding;
