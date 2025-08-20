@@ -836,7 +836,20 @@
                 
                 try {
                     const data = JSON.parse(event.data);
-                    updateOscilloscope(data.voltage, data.timestamp);
+                    
+                    // Handle batch data format
+                    if (data.samples && Array.isArray(data.samples)) {
+                        // Process each sample in the batch
+                        data.samples.forEach(sample => {
+                            updateOscilloscope(sample.voltage, sample.timestamp);
+                        });
+                        // Update chart once after processing all samples in batch
+                        updateOscilloscopeChart();
+                    } else if (data.voltage !== undefined && data.timestamp !== undefined) {
+                        // Handle single sample format (backwards compatibility)
+                        updateOscilloscope(data.voltage, data.timestamp);
+                        updateOscilloscopeChart();
+                    }
                 } catch (e) {
                     console.error('Error parsing WebSocket data:', e);
                 }
@@ -886,28 +899,29 @@
             if (oscilloscopeData.length > maxOscilloscopePoints) {
                 oscilloscopeData.shift();
             }
+        }
+        
+        // Batch update function called after processing all samples
+        function updateOscilloscopeChart() {
+            if (!oscilloscopeChart || !oscilloscopeActive || oscilloscopeData.length === 0) return;
             
             // Update chart data
             oscilloscopeChart.data.datasets[0].data = oscilloscopeData.slice();
             
             // Auto-scale x-axis to show last 200ms
-            if (oscilloscopeData.length > 0) {
-                const latestTime = oscilloscopeData[oscilloscopeData.length - 1].x;
-                oscilloscopeChart.options.scales.x.min = latestTime - 200;
-                oscilloscopeChart.options.scales.x.max = latestTime;
-            }
+            const latestTime = oscilloscopeData[oscilloscopeData.length - 1].x;
+            oscilloscopeChart.options.scales.x.min = latestTime - 200;
+            oscilloscopeChart.options.scales.x.max = latestTime;
             
             // Auto-scale y-axis based on current data
-            if (oscilloscopeData.length > 0) {
-                const voltages = oscilloscopeData.map(point => point.y);
-                const minVoltage = Math.min(...voltages);
-                const maxVoltage = Math.max(...voltages);
-                const range = maxVoltage - minVoltage;
-                const padding = Math.max(range * 0.1, 10); // 10% padding or minimum 10mV
-                
-                oscilloscopeChart.options.scales.y.min = minVoltage - padding;
-                oscilloscopeChart.options.scales.y.max = maxVoltage + padding;
-            }
+            const voltages = oscilloscopeData.map(point => point.y);
+            const minVoltage = Math.min(...voltages);
+            const maxVoltage = Math.max(...voltages);
+            const range = maxVoltage - minVoltage;
+            const padding = Math.max(range * 0.1, 10); // 10% padding or minimum 10mV
+            
+            oscilloscopeChart.options.scales.y.min = minVoltage - padding;
+            oscilloscopeChart.options.scales.y.max = maxVoltage + padding;
             
             // Update chart
             oscilloscopeChart.update('none'); // 'none' mode for better performance

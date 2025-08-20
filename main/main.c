@@ -82,6 +82,17 @@ typedef struct {
     uint32_t timestamp_us;
 } ws_data_packet_t;
 
+// WebSocket batch structure for sending multiple samples at once
+#define WS_BATCH_SIZE 100
+typedef struct {
+    ws_data_packet_t samples[WS_BATCH_SIZE];
+    size_t count;
+} ws_batch_packet_t;
+
+// WebSocket batch variables
+static ws_batch_packet_t current_batch = {0};
+static size_t batch_index = 0;
+
 // Synchronization
 static SemaphoreHandle_t buffer_mutex;
 static SemaphoreHandle_t processing_semaphore;
@@ -139,7 +150,7 @@ void app_main(void)
     // Create synchronization primitives
     buffer_mutex = xSemaphoreCreateMutex();
     processing_semaphore = xSemaphoreCreateBinary();
-    ws_data_queue = xQueueCreate(50, sizeof(ws_data_packet_t)); // Queue for 50 WebSocket packets
+    ws_data_queue = xQueueCreate(10, sizeof(ws_batch_packet_t)); // Queue for 10 WebSocket batch packets
     
     if (buffer_mutex == NULL || processing_semaphore == NULL || ws_data_queue == NULL) {
         ESP_LOGE(TAG, "Failed to create synchronization primitives");
@@ -169,7 +180,7 @@ void app_main(void)
     xTaskCreate(adc_processing_task, "adc_processing", 4096, NULL, 5, NULL);
     
     // Create WebSocket data transmission task
-    xTaskCreate(ws_data_task, "ws_data", 4096, NULL, 4, NULL);
+    xTaskCreate(ws_data_task, "ws_data", 4096*3, NULL, 4, NULL);
 
     // Create and start timer for ADC sampling
     esp_timer_create_args_t timer_args = {
@@ -275,14 +286,17 @@ static void IRAM_ATTR adc_timer_callback(void* arg)
     if (ws_decimation_counter >= WS_DECIMATION_FACTOR && ws_client_connected) {
         ws_decimation_counter = 0;
         
-        // Create WebSocket data packet
-        ws_data_packet_t packet = {
-            .voltage_mv = filtered_voltage,
-            .timestamp_us = esp_timer_get_time()
-        };
+        // Add sample to current batch
+        current_batch.samples[batch_index].voltage_mv = filtered_voltage;
+        current_batch.samples[batch_index].timestamp_us = esp_timer_get_time();
+        batch_index++;
         
-        // Send to WebSocket queue (non-blocking)
-        xQueueSendFromISR(ws_data_queue, &packet, NULL);
+        // Send batch when full
+        if (batch_index >= WS_BATCH_SIZE) {
+            current_batch.count = batch_index;
+            xQueueSendFromISR(ws_data_queue, &current_batch, NULL);
+            batch_index = 0; // Reset batch
+        }
     }
     
     buffer_index++;
@@ -565,6 +579,13 @@ static esp_err_t ws_handler(httpd_req_t *req)
     } else if (ws_pkt.type == HTTPD_WS_TYPE_CLOSE) {
         ESP_LOGI(TAG, "WebSocket connection closed");
         ws_client_connected = false;
+        
+        // Flush any remaining batch data
+        if (batch_index > 0) {
+            current_batch.count = batch_index;
+            xQueueSend(ws_data_queue, &current_batch, 0); // Non-blocking send
+            batch_index = 0;
+        }
     }
     
     if (buf) {
@@ -578,20 +599,30 @@ static esp_err_t ws_handler(httpd_req_t *req)
 ---------------------------------------------------------------*/
 static void ws_data_task(void *pvParameters)
 {
-    ws_data_packet_t packet;
-    char json_buffer[128];
+    ws_batch_packet_t batch;
+    char json_buffer[8192]; // Larger buffer for batch data
     httpd_ws_frame_t ws_pkt;
     
     while (1) {
-        // Wait for data from queue
-        if (xQueueReceive(ws_data_queue, &packet, portMAX_DELAY) == pdTRUE) {
+        // Wait for batch data from queue
+        if (xQueueReceive(ws_data_queue, &batch, portMAX_DELAY) == pdTRUE) {
             if (ws_client_connected && server != NULL) {
-                // Format data as JSON
-                snprintf(json_buffer, sizeof(json_buffer),
-                    "{\"voltage\":%.2f,\"timestamp\":%lu}",
-                    packet.voltage_mv, 
-                    (unsigned long)(packet.timestamp_us / 1000) // Convert to milliseconds
-                );
+                // Format batch data as JSON array
+                int offset = snprintf(json_buffer, sizeof(json_buffer), "{\"samples\":[");
+                
+                for (size_t i = 0; i < batch.count && offset < sizeof(json_buffer) - 50; i++) {
+                    if (i > 0) {
+                        offset += snprintf(json_buffer + offset, sizeof(json_buffer) - offset, ",");
+                    }
+                    offset += snprintf(json_buffer + offset, sizeof(json_buffer) - offset,
+                        "{\"voltage\":%.2f,\"timestamp\":%lu}",
+                        batch.samples[i].voltage_mv,
+                        (unsigned long)(batch.samples[i].timestamp_us / 1000) // Convert to milliseconds
+                    );
+                }
+                
+                offset += snprintf(json_buffer + offset, sizeof(json_buffer) - offset, 
+                    "],\"count\":%zu}", batch.count);
                 
                 // Prepare WebSocket frame
                 memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
