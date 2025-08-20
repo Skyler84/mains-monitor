@@ -460,11 +460,11 @@ static esp_err_t api_stats_get_handler(httpd_req_t *req)
         "{"
         "\"dc_bias\":%.1f,"
         "\"ac_rms\":%.1f,"
-        "\"peak_peak\":%.1f,"
-        "\"frequency\":%.2f,"
+        "\"peak_peak\":%.2f,"
+        "\"frequency\":%.3f,"
         "\"zero_crossings\":%lu,"
-        "\"mains_rms\":%.1f,"
-        "\"mains_peak\":%.1f"
+        "\"mains_rms\":%.2f,"
+        "\"mains_peak\":%.2f"
         "}",
         latest_stats.mean_voltage_mv,
         latest_stats.ac_rms_voltage_mv,
