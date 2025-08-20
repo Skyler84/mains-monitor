@@ -212,11 +212,13 @@
             <button class="btn" onclick="updateStats()">🔄 Refresh Now</button>
             <button class="btn btn-secondary" onclick="toggleLogging()" id="log-button">📊 Start Logging</button>
             <button class="btn btn-danger" onclick="clearHistory()">🗑️ Clear History</button>
+            <button class="btn btn-secondary" onclick="toggleBackgroundLogging()" id="background-button">🌙 Background Off</button>
         </div>
 
         <div class="history-info">
             <span id="history-count">No data logged</span> | 
-            <span id="history-duration">--</span>
+            <span id="history-duration">--</span> |
+            <span id="background-status">Background logging: Off</span>
         </div>
 
         <div class="tab-container">
@@ -255,6 +257,7 @@
     <script>
         let updateInterval;
         let isLogging = false;
+        let backgroundLogging = false; // Continue logging when tab is hidden
         let historyData = [];
         let maxHistoryPoints = 500; // Keep last 500 measurements
         let frequencyChart, voltageChart;
@@ -509,6 +512,26 @@
             }
         }
         
+        function toggleBackgroundLogging() {
+            backgroundLogging = !backgroundLogging;
+            const button = document.getElementById('background-button');
+            const status = document.getElementById('background-status');
+            
+            if (backgroundLogging) {
+                button.textContent = '🌙 Background On';
+                button.className = 'btn';
+                button.title = 'Logging will continue when tab is hidden';
+                status.textContent = 'Background logging: On';
+                status.style.color = '#28a745';
+            } else {
+                button.textContent = '🌙 Background Off';
+                button.className = 'btn btn-secondary';
+                button.title = 'Logging will pause when tab is hidden';
+                status.textContent = 'Background logging: Off';
+                status.style.color = '#666';
+            }
+        }
+        
         function clearHistory() {
             if (historyData.length > 0 && !confirm('Are you sure you want to clear all logged data?')) {
                 return;
@@ -559,9 +582,18 @@
         // Handle page visibility changes to pause/resume updates
         document.addEventListener('visibilitychange', function() {
             if (document.hidden) {
-                stopAutoUpdate();
+                // Tab is hidden
+                if (!backgroundLogging) {
+                    // Stop updates only if background logging is disabled
+                    stopAutoUpdate();
+                }
+                // If background logging is enabled, keep updates running
             } else {
-                startAutoUpdate();
+                // Tab is visible again
+                if (!updateInterval) {
+                    // Restart updates if they were stopped
+                    startAutoUpdate();
+                }
             }
         });
     </script>
