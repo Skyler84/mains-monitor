@@ -10,6 +10,11 @@
 #include "esp_adc/adc_cali_scheme.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_netif.h"
+#include "esp_http_server.h"
+#include "nvs_flash.h"
 
 static const char *TAG = "ADC_MONITOR";
 
@@ -20,6 +25,12 @@ static const char *TAG = "ADC_MONITOR";
 #define BUFFER_SIZE                 10000
 #define SAMPLE_RATE_HZ              10000
 #define SAMPLE_PERIOD_US            (1000000 / SAMPLE_RATE_HZ)  // 100 microseconds
+
+// WiFi AP configuration
+#define WIFI_SSID               "mains-monitor"
+#define WIFI_PASS               "mains-monitor-password"
+#define WIFI_CHANNEL            1
+#define MAX_STA_CONN            4
 
 // Voltage scaling configuration
 #define ISOLATION_RATIO             (242.5f / 8.4f)    // 242.5V to 8.4V isolation transformer
@@ -38,6 +49,10 @@ static volatile bool buffer_ready_for_processing = false;
 static adc_oneshot_unit_handle_t adc1_handle;
 static adc_cali_handle_t adc1_cali_handle = NULL;
 static bool adc_calibrated = false;
+
+// Web server handle
+static httpd_handle_t server = NULL;
+
 
 // Synchronization
 static SemaphoreHandle_t buffer_mutex;
@@ -58,15 +73,35 @@ typedef struct {
     uint32_t zero_crossings;        // Number of zero crossings detected
 } adc_statistics_t;
 
+
+// Latest statistics for web display
+static adc_statistics_t latest_stats = {0};
+
 // Function prototypes
 static bool example_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle);
 static void example_adc_calibration_deinit(adc_cali_handle_t handle);
 static void adc_timer_callback(void* arg);
 static void adc_processing_task(void *pvParameters);
 static void calculate_statistics(const float *voltage_buffer, adc_statistics_t *stats);
+static void wifi_init_softap(void);
+static esp_err_t root_get_handler(httpd_req_t *req);
+static esp_err_t api_stats_get_handler(httpd_req_t *req);
+static httpd_handle_t start_webserver(void);
 
 void app_main(void)
 {
+    // Initialize NVS
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+    
+    // Initialize networking
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    
     // Create synchronization primitives
     buffer_mutex = xSemaphoreCreateMutex();
     processing_semaphore = xSemaphoreCreateBinary();
@@ -108,6 +143,13 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_timer_start_periodic(adc_timer, SAMPLE_PERIOD_US));
 
     ESP_LOGI(TAG, "Continuous ADC sampling started. Statistics will be calculated every %d samples.", BUFFER_SIZE);
+
+    // Initialize WiFi AP and start web server
+    wifi_init_softap();
+    server = start_webserver();
+    if (server) {
+        ESP_LOGI(TAG, "Web server started. Connect to WiFi '%s' and browse to http://192.168.4.1", WIFI_SSID);
+    }
 
     // Main task just monitors the system
     while (1) {
@@ -192,6 +234,9 @@ static void adc_processing_task(void *pvParameters)
                 
                 // Calculate statistics on the completed buffer
                 calculate_statistics((const float*)processing_voltage_buffer, &stats);
+                
+                // Update latest stats for web display
+                latest_stats = stats;
                 
                 // Print statistics - all in voltage domain
                 ESP_LOGI(TAG, "=== Voltage Statistics (10000 samples) ===");
@@ -315,6 +360,185 @@ static void calculate_statistics(const float *voltage_buffer, adc_statistics_t *
     // Scale to mains voltage
     stats->ac_rms_voltage_scaled = (stats->ac_rms_voltage_mv / 1000.0f) * TOTAL_SCALING;
     stats->peak_to_peak_scaled = (stats->peak_to_peak_mv / 1000.0f) * TOTAL_SCALING;
+}
+
+/*---------------------------------------------------------------
+        WiFi Access Point Setup
+---------------------------------------------------------------*/
+static void wifi_init_softap(void)
+{
+    esp_netif_create_default_wifi_ap();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    wifi_config_t wifi_config = {
+        .ap = {
+            .ssid = WIFI_SSID,
+            .ssid_len = strlen(WIFI_SSID),
+            .channel = WIFI_CHANNEL,
+            .password = WIFI_PASS,
+            .max_connection = MAX_STA_CONN,
+            .authmode = WIFI_AUTH_WPA_WPA2_PSK
+        },
+    };
+    
+    if (strlen(WIFI_PASS) == 0) {
+        wifi_config.ap.authmode = WIFI_AUTH_OPEN;
+    }
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "WiFi AP started. SSID: %s, Password: %s", WIFI_SSID, WIFI_PASS);
+}
+
+/*---------------------------------------------------------------
+        Web Server Handlers
+---------------------------------------------------------------*/
+static esp_err_t root_get_handler(httpd_req_t *req)
+{
+    const char* html_page = 
+        "<!DOCTYPE html>"
+        "<html><head>"
+        "<title>Mains Monitor</title>"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        "<style>"
+        "body { font-family: Arial, sans-serif; margin: 20px; background-color: #f0f0f0; }"
+        ".container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }"
+        "h1 { color: #333; text-align: center; }"
+        ".stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; margin: 20px 0; }"
+        ".stat-card { background: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 4px solid #007bff; }"
+        ".stat-value { font-size: 24px; font-weight: bold; color: #007bff; }"
+        ".stat-label { color: #666; font-size: 14px; margin-top: 5px; }"
+        ".frequency-card { border-left-color: #28a745; }"
+        ".frequency-card .stat-value { color: #28a745; }"
+        ".voltage-card { border-left-color: #dc3545; }"
+        ".voltage-card .stat-value { color: #dc3545; }"
+        ".mains-card { border-left-color: #ffc107; }"
+        ".mains-card .stat-value { color: #e67e22; }"
+        ".refresh-btn { background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin: 10px auto; display: block; }"
+        ".refresh-btn:hover { background: #0056b3; }"
+        "</style>"
+        "<script>"
+        "function updateStats() {"
+        "  fetch('/api/stats')"
+        "    .then(response => response.json())"
+        "    .then(data => {"
+        "      document.getElementById('dc-bias').textContent = data.dc_bias.toFixed(1);"
+        "      document.getElementById('ac-rms').textContent = data.ac_rms.toFixed(1);"
+        "      document.getElementById('peak-peak').textContent = data.peak_peak.toFixed(1);"
+        "      document.getElementById('frequency').textContent = data.frequency.toFixed(2);"
+        "      document.getElementById('zero-crossings').textContent = data.zero_crossings;"
+        "      document.getElementById('mains-rms').textContent = data.mains_rms.toFixed(1);"
+        "      document.getElementById('mains-peak').textContent = data.mains_peak.toFixed(1);"
+        "    })"
+        "    .catch(err => console.error('Error:', err));"
+        "}"
+        "setInterval(updateStats, 1000);"
+        "window.onload = updateStats;"
+        "</script>"
+        "</head><body>"
+        "<div class=\"container\">"
+        "<h1>🔌 Mains Voltage Monitor</h1>"
+        "<div class=\"stats-grid\">"
+        "<div class=\"stat-card\">"
+        "<div class=\"stat-value\" id=\"dc-bias\">--</div>"
+        "<div class=\"stat-label\">DC Bias (mV)</div>"
+        "</div>"
+        "<div class=\"stat-card voltage-card\">"
+        "<div class=\"stat-value\" id=\"ac-rms\">--</div>"
+        "<div class=\"stat-label\">AC RMS (mV)</div>"
+        "</div>"
+        "<div class=\"stat-card voltage-card\">"
+        "<div class=\"stat-value\" id=\"peak-peak\">--</div>"
+        "<div class=\"stat-label\">Peak-to-Peak (mV)</div>"
+        "</div>"
+        "<div class=\"stat-card frequency-card\">"
+        "<div class=\"stat-value\" id=\"frequency\">--</div>"
+        "<div class=\"stat-label\">Frequency (Hz)</div>"
+        "</div>"
+        "<div class=\"stat-card frequency-card\">"
+        "<div class=\"stat-value\" id=\"zero-crossings\">--</div>"
+        "<div class=\"stat-label\">Zero Crossings</div>"
+        "</div>"
+        "<div class=\"stat-card mains-card\">"
+        "<div class=\"stat-value\" id=\"mains-rms\">--</div>"
+        "<div class=\"stat-label\">Mains AC RMS (V)</div>"
+        "</div>"
+        "<div class=\"stat-card mains-card\">"
+        "<div class=\"stat-value\" id=\"mains-peak\">--</div>"
+        "<div class=\"stat-label\">Mains Peak-to-Peak (V)</div>"
+        "</div>"
+        "</div>"
+        "<button class=\"refresh-btn\" onclick=\"updateStats()\">🔄 Refresh Now</button>"
+        "</div>"
+        "</body></html>";
+
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, html_page, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t api_stats_get_handler(httpd_req_t *req)
+{
+    char json_response[512];
+    
+    snprintf(json_response, sizeof(json_response),
+        "{"
+        "\"dc_bias\":%.1f,"
+        "\"ac_rms\":%.1f,"
+        "\"peak_peak\":%.1f,"
+        "\"frequency\":%.2f,"
+        "\"zero_crossings\":%lu,"
+        "\"mains_rms\":%.1f,"
+        "\"mains_peak\":%.1f"
+        "}",
+        latest_stats.mean_voltage_mv,
+        latest_stats.ac_rms_voltage_mv,
+        latest_stats.peak_to_peak_mv,
+        latest_stats.frequency_hz,
+        latest_stats.zero_crossings,
+        latest_stats.ac_rms_voltage_scaled,
+        latest_stats.peak_to_peak_scaled
+    );
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
+}
+
+static httpd_handle_t start_webserver(void)
+{
+    httpd_handle_t server = NULL;
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.lru_purge_enable = true;
+
+    ESP_LOGI(TAG, "Starting HTTP server on port: '%d'", config.server_port);
+    if (httpd_start(&server, &config) == ESP_OK) {
+        // Root page handler
+        httpd_uri_t root = {
+            .uri       = "/",
+            .method    = HTTP_GET,
+            .handler   = root_get_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(server, &root);
+
+        // API stats handler
+        httpd_uri_t api_stats = {
+            .uri       = "/api/stats",
+            .method    = HTTP_GET,
+            .handler   = api_stats_get_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(server, &api_stats);
+
+        return server;
+    }
+
+    ESP_LOGI(TAG, "Error starting server!");
+    return NULL;
 }
 
 /*---------------------------------------------------------------
