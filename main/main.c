@@ -3,7 +3,7 @@
 #include "web/server.h"
 #include "rtc_time.h"
 #include "nvs_logging.h"
-#include "nvs_logging.h"
+#include "led_status.h"
 #include "web/server.h"
 
 #include <stdio.h>
@@ -161,6 +161,7 @@ static void example_adc_calibration_deinit(adc_cali_handle_t handle);
 static void adc_timer_callback(void* arg);
 static void adc_processing_task(void *pvParameters);
 static void calculate_statistics(const float *voltage_buffer, adc_statistics_t *stats);
+static void update_system_status(const adc_statistics_t *stats);
 void app_main(void)
 {
     // Initialize NVS
@@ -170,6 +171,9 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+    
+    // Initialize LED status system first for early feedback
+    ESP_ERROR_CHECK(led_status_init());
     
     // Initialize networking
     ESP_ERROR_CHECK(esp_netif_init());
@@ -310,6 +314,12 @@ static void IRAM_ATTR adc_timer_callback(void* arg)
     // Read ADC value
     esp_err_t ret = adc_oneshot_read(adc1_handle, EXAMPLE_ADC1_CHAN0, &adc_raw);
     if (ret != ESP_OK) {
+        static uint32_t adc_error_count = 0;
+        adc_error_count++;
+        if (adc_error_count > 100) { // Multiple consecutive failures
+            led_status_update(LED_FLAG_ADC_ERROR);
+            ESP_LOGE(TAG, "Persistent ADC read failures");
+        }
         return; // Skip this sample if read fails
     }
     
@@ -320,6 +330,12 @@ static void IRAM_ATTR adc_timer_callback(void* arg)
         if (adc_cali_raw_to_voltage(adc1_cali_handle, adc_raw, &voltage_raw) == ESP_OK) {
             voltage_mv = (float)voltage_raw;
         } else {
+            static uint32_t cali_error_count = 0;
+            cali_error_count++;
+            if (cali_error_count > 100) { // Multiple consecutive failures
+                led_status_update(LED_FLAG_ADC_ERROR);
+                ESP_LOGE(TAG, "Persistent ADC calibration failures");
+            }
             return; // Skip this sample if conversion fails
         }
     } else {
@@ -382,6 +398,9 @@ static void adc_processing_task(void *pvParameters)
                 // Update latest stats for web display
                 latest_stats = stats;
                 
+                // Check system status and update LEDs
+                update_system_status(&stats);
+                
                 // Notify statistics subscribers
                 notify_statistics_subscribers(&stats);
                 
@@ -404,6 +423,48 @@ static void adc_processing_task(void *pvParameters)
                 buffer_ready_for_processing = false;
             }
         }
+    }
+}
+
+/*---------------------------------------------------------------
+        System Status Monitoring
+---------------------------------------------------------------*/
+static void update_system_status(const adc_statistics_t *stats)
+{
+    uint32_t status_flags = LED_FLAG_NONE;
+    
+    // Check if RTC is set
+    if (!rtc_is_time_set()) {
+        status_flags |= LED_FLAG_RTC_NOT_SET;
+    }
+    
+    // Check voltage levels (reasonable mains voltage range: 100V - 260V RMS)
+    float voltage_rms = stats->ac_rms_voltage_scaled;
+    if (voltage_rms > 260.0f) {
+        status_flags |= LED_FLAG_VOLTAGE_HIGH;
+    } else if (voltage_rms < 100.0f && voltage_rms > 5.0f) { // Ignore very low readings (no voltage present)
+        status_flags |= LED_FLAG_VOLTAGE_LOW;
+    }
+    
+    // Check frequency (reasonable mains frequency range: 45Hz - 65Hz)
+    float frequency = stats->frequency_hz;
+    if (frequency > 65.0f) {
+        status_flags |= LED_FLAG_FREQ_HIGH;
+    } else if (frequency < 45.0f && frequency > 5.0f) { // Ignore very low readings (no signal)
+        status_flags |= LED_FLAG_FREQ_LOW;
+    }
+    
+    // Update LED status
+    led_status_update(status_flags);
+    
+    // Log warnings if any
+    if (status_flags != LED_FLAG_NONE) {
+        ESP_LOGW(TAG, "System status flags: 0x%lx", status_flags);
+        if (status_flags & LED_FLAG_RTC_NOT_SET) ESP_LOGW(TAG, "  - RTC not set");
+        if (status_flags & LED_FLAG_VOLTAGE_HIGH) ESP_LOGW(TAG, "  - Voltage high: %.1fV", voltage_rms);
+        if (status_flags & LED_FLAG_VOLTAGE_LOW) ESP_LOGW(TAG, "  - Voltage low: %.1fV", voltage_rms);
+        if (status_flags & LED_FLAG_FREQ_HIGH) ESP_LOGW(TAG, "  - Frequency high: %.1fHz", frequency);
+        if (status_flags & LED_FLAG_FREQ_LOW) ESP_LOGW(TAG, "  - Frequency low: %.1fHz", frequency);
     }
 }
 

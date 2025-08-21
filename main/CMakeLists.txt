@@ -4,6 +4,7 @@ idf_component_register(
         "wifi.c"
         "rtc_time.c"
         "nvs_logging.c"
+        "led_status.c"
         "web/server.c"
     INCLUDE_DIRS 
         "."
