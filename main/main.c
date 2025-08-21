@@ -1,6 +1,7 @@
 #include "main.h"
 #include "wifi.h"
 #include "web/server.h"
+#include "nvs_logging.h"
 #include "web/server.h"
 
 #include <stdio.h>
@@ -236,6 +237,19 @@ void app_main(void)
             ESP_LOGI(TAG, "Web server started in Station mode. Attempting to connect to WiFi '%s'...", current_wifi_config.ssid);
             ESP_LOGI(TAG, "The IP address will be displayed once connected. Then browse to that IP address.");
         }
+    }
+
+    // Initialize and start NVS logging
+    ret = nvs_logging_init();
+    if (ret == ESP_OK) {
+        ret = nvs_logging_start();
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "NVS logging started - statistics will be logged to flash every second");
+        } else {
+            ESP_LOGE(TAG, "Failed to start NVS logging: %s", esp_err_to_name(ret));
+        }
+    } else {
+        ESP_LOGE(TAG, "Failed to initialize NVS logging: %s", esp_err_to_name(ret));
     }
 
     // Main task just monitors the system

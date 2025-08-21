@@ -275,6 +275,7 @@
         <div class="controls">
             <button class="btn" onclick="updateStats()">🔄 Refresh Now</button>
             <button class="btn btn-secondary" onclick="toggleLogging()" id="log-button">📊 Start Logging</button>
+            <button class="btn btn-primary" onclick="loadHistoryFromServer()">📥 Load from Flash</button>
             <button class="btn btn-danger" onclick="clearHistory()">🗑️ Clear History</button>
             <button class="btn btn-secondary" onclick="toggleBackgroundLogging()" id="background-button">🌙 Background Off</button>
         </div>
@@ -786,20 +787,103 @@
             const countElement = document.getElementById('history-count');
             const durationElement = document.getElementById('history-duration');
             
+            // Update with client-side history data first
             if (historyData.length === 0) {
                 countElement.textContent = 'No data logged';
                 durationElement.textContent = '--';
+            } else {
+                countElement.textContent = `${historyData.length} data points`;
+                
+                if (historyData.length > 1) {
+                    const duration = (historyData[historyData.length - 1].timestamp - historyData[0].timestamp) / 1000 / 60;
+                    durationElement.textContent = `${duration.toFixed(1)} minutes logged`;
+                } else {
+                    durationElement.textContent = 'Just started';
+                }
+            }
+            
+            // Also fetch server-side history status
+            fetchHistoryStatus();
+        }
+        
+        function fetchHistoryStatus() {
+            fetch('/api/history/status')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        const statusInfo = document.getElementById('history-duration');
+                        const statusText = `${data.data.total_entries} entries in flash | ${statusInfo.textContent}`;
+                        statusInfo.textContent = statusText;
+                        
+                        // Update flash storage indicator
+                        const flashActive = data.data.logging_active ? '🟢' : '🔴';
+                        const countElement = document.getElementById('history-count');
+                        countElement.innerHTML = `${countElement.textContent} | Flash: ${flashActive}`;
+                    }
+                })
+                .catch(error => {
+                    console.error('Failed to fetch history status:', error);
+                });
+        }
+        
+        function loadHistoryFromServer(count = 1000) {
+            fetch(`/api/history/data?offset=0&count=${count}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success' && data.data.entries.length > 0) {
+                        // Convert server data to client format
+                        const serverHistory = data.data.entries.map(entry => ({
+                            timestamp: entry.timestamp_us / 1000, // Convert to milliseconds
+                            frequency: entry.frequency_hz,
+                            acRms: entry.ac_rms_voltage_scaled,
+                            peakPeak: entry.peak_to_peak_scaled,
+                            rawMean: entry.mean_voltage_mv,
+                            rawRms: entry.rms_voltage_mv,
+                            rawAcRms: entry.ac_rms_voltage_mv
+                        }));
+                        
+                        // Replace current history with server data
+                        historyData = serverHistory;
+                        updateCharts();
+                        updateHistoryInfo();
+                        
+                        console.log(`Loaded ${data.data.entries.length} entries from server`);
+                    }
+                })
+                .catch(error => {
+                    console.error('Failed to load history from server:', error);
+                    alert('Failed to load history from server');
+                });
+        }
+        
+        function clearHistory() {
+            if (!confirm('Are you sure you want to clear all logged data? This will clear both browser memory AND flash storage.')) {
                 return;
             }
             
-            countElement.textContent = `${historyData.length} data points`;
-            
-            if (historyData.length > 1) {
-                const duration = (historyData[historyData.length - 1].timestamp - historyData[0].timestamp) / 1000 / 60;
-                durationElement.textContent = `${duration.toFixed(1)} minutes logged`;
-            } else {
-                durationElement.textContent = 'Just started';
-            }
+            // Clear server-side history
+            fetch('/api/history/clear', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    // Clear client-side history
+                    historyData = [];
+                    updateCharts();
+                    updateHistoryInfo();
+                    console.log('History cleared successfully');
+                } else {
+                    alert('Failed to clear server history: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Failed to clear history:', error);
+                alert('Failed to clear history');
+            });
         }
         
         function toggleLogging() {
@@ -845,6 +929,32 @@
             updateHistoryInfo();
         }
         
+        function toggleLogging() {
+            isLogging = !isLogging;
+            const button = document.getElementById('log-button');
+            
+            if (isLogging) {
+                button.textContent = '⏸️ Stop Logging';
+                button.className = 'btn btn-danger';
+            } else {
+                button.textContent = '📊 Start Logging';
+                button.className = 'btn btn-secondary';
+            }
+        }
+        
+        function toggleBackgroundLogging() {
+            backgroundLogging = !backgroundLogging;
+            const button = document.getElementById('background-button');
+            
+            if (backgroundLogging) {
+                button.textContent = '🔕 Disable Background';
+                button.className = 'btn btn-danger';
+            } else {
+                button.textContent = '🔔 Enable Background';
+                button.className = 'btn btn-secondary';
+            }
+        }
+
         function showTab(tabName) {
             // Hide all monitoring sub-tabs
             document.querySelectorAll('#monitoring-main-tab .tab-content').forEach(tab => {

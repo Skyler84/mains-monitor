@@ -1,7 +1,10 @@
 #include "server.h"
 #include "wifi.h"
+#include "nvs_logging.h"
 
 #include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -10,7 +13,6 @@ static const char *TAG = "WEB_SERVER";
 
 // Web server handle
 httpd_handle_t server = NULL;
-
 
 // WebSocket oscilloscope variables
 volatile uint32_t ws_buffer_index = 0;   // Current position in WebSocket buffer
@@ -188,6 +190,158 @@ esp_err_t api_wifi_post_handler(httpd_req_t *req)
 }
 
 /*---------------------------------------------------------------
+        History API Handlers
+---------------------------------------------------------------*/
+esp_err_t api_history_status_get_handler(httpd_req_t *req)
+{
+    log_status_t status;
+    esp_err_t ret = nvs_logging_get_status(&status);
+    
+    if (ret != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"status\":\"error\",\"message\":\"Failed to get logging status\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    
+    char json_response[512];
+    snprintf(json_response, sizeof(json_response),
+        "{"
+        "\"status\":\"success\","
+        "\"data\":{"
+        "\"total_entries\":%lu,"
+        "\"current_offset\":%lu,"
+        "\"partition_size\":%lu,"
+        "\"entries_written\":%lu,"
+        "\"logging_active\":%s"
+        "}"
+        "}",
+        status.total_entries,
+        status.current_offset,
+        status.partition_size,
+        status.entries_written,
+        status.logging_active ? "true" : "false"
+    );
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
+}
+
+esp_err_t api_history_data_get_handler(httpd_req_t *req)
+{
+    // Parse query parameters
+    char query[256];
+    size_t query_len = sizeof(query);
+    esp_err_t ret = httpd_req_get_url_query_str(req, query, query_len);
+    
+    uint32_t start_offset = 0;
+    uint32_t count = 100; // Default to 100 entries
+    
+    if (ret == ESP_OK) {
+        char param[32];
+        
+        // Parse start offset
+        if (httpd_query_key_value(query, "offset", param, sizeof(param)) == ESP_OK) {
+            start_offset = atoi(param);
+        }
+        
+        // Parse count
+        if (httpd_query_key_value(query, "count", param, sizeof(param)) == ESP_OK) {
+            count = atoi(param);
+            if (count > 1000) count = 1000; // Limit to prevent memory issues
+        }
+    }
+    
+    // Allocate memory for entries
+    log_entry_t *entries = malloc(count * sizeof(log_entry_t));
+    if (entries == NULL) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"status\":\"error\",\"message\":\"Memory allocation failed\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    
+    uint32_t entries_read = 0;
+    ret = nvs_logging_read_entries(start_offset, count, entries, &entries_read);
+    
+    if (ret != ESP_OK) {
+        free(entries);
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"status\":\"error\",\"message\":\"Failed to read entries\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    
+    ESP_LOGI(TAG, "API: Read %lu entries from NVS logging (requested %lu, offset %lu)", 
+             entries_read, count, start_offset);
+    
+    // Start JSON response
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    
+    char json_header[256];
+    snprintf(json_header, sizeof(json_header), 
+        "{\"status\":\"success\",\"data\":{\"entries_read\":%lu,\"start_offset\":%lu,\"entries\":[",
+        entries_read, start_offset);
+    httpd_resp_send_chunk(req, json_header, strlen(json_header));
+    
+    // Send entries
+    for (uint32_t i = 0; i < entries_read; i++) {
+        char entry_json[512];
+        snprintf(entry_json, sizeof(entry_json),
+            "%s{"
+            "\"timestamp_us\":%llu,"
+            "\"mean_voltage_mv\":%.2f,"
+            "\"rms_voltage_mv\":%.2f,"
+            "\"ac_rms_voltage_mv\":%.2f,"
+            "\"std_dev_voltage_mv\":%.2f,"
+            "\"min_voltage_mv\":%.2f,"
+            "\"max_voltage_mv\":%.2f,"
+            "\"peak_to_peak_mv\":%.2f,"
+            "\"ac_rms_voltage_scaled\":%.2f,"
+            "\"peak_to_peak_scaled\":%.2f,"
+            "\"frequency_hz\":%.2f,"
+            "\"zero_crossings\":%lu"
+            "}",
+            (i > 0) ? "," : "",
+            entries[i].timestamp_us,
+            entries[i].mean_voltage_mv,
+            entries[i].rms_voltage_mv,
+            entries[i].ac_rms_voltage_mv,
+            entries[i].std_dev_voltage_mv,
+            entries[i].min_voltage_mv,
+            entries[i].max_voltage_mv,
+            entries[i].peak_to_peak_mv,
+            entries[i].ac_rms_voltage_scaled,
+            entries[i].peak_to_peak_scaled,
+            entries[i].frequency_hz,
+            entries[i].zero_crossings
+        );
+        httpd_resp_send_chunk(req, entry_json, strlen(entry_json));
+    }
+    
+    // Close JSON
+    httpd_resp_send_chunk(req, "]}}", 3);
+    httpd_resp_send_chunk(req, NULL, 0); // End chunked response
+    
+    free(entries);
+    return ESP_OK;
+}
+
+esp_err_t api_history_clear_post_handler(httpd_req_t *req)
+{
+    esp_err_t ret = nvs_logging_erase_all();
+    
+    if (ret == ESP_OK) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        return httpd_resp_send(req, "{\"status\":\"success\",\"message\":\"History cleared successfully\"}", HTTPD_RESP_USE_STRLEN);
+    } else {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"status\":\"error\",\"message\":\"Failed to clear history\"}", HTTPD_RESP_USE_STRLEN);
+    }
+}
+
+/*---------------------------------------------------------------
         WebSocket Handler
 ---------------------------------------------------------------*/
 esp_err_t ws_handler(httpd_req_t *req)
@@ -305,6 +459,7 @@ httpd_handle_t start_webserver(void)
 {
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.max_uri_handlers = 20; // Increase max URI handlers for additional API endpoints
     config.lru_purge_enable = true;
 
     ESP_LOGI(TAG, "Starting HTTP server on port: '%d'", config.server_port);
@@ -352,6 +507,33 @@ httpd_handle_t start_webserver(void)
             .user_ctx  = NULL
         };
         httpd_register_uri_handler(server, &api_wifi_post);
+
+        // History status GET handler
+        httpd_uri_t api_history_status = {
+            .uri       = "/api/history/status",
+            .method    = HTTP_GET,
+            .handler   = api_history_status_get_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(server, &api_history_status);
+
+        // History data GET handler
+        httpd_uri_t api_history_data = {
+            .uri       = "/api/history/data",
+            .method    = HTTP_GET,
+            .handler   = api_history_data_get_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(server, &api_history_data);
+
+        // History clear POST handler
+        httpd_uri_t api_history_clear = {
+            .uri       = "/api/history/clear",
+            .method    = HTTP_POST,
+            .handler   = api_history_clear_post_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(server, &api_history_clear);
 
         // WebSocket oscilloscope handler
         httpd_uri_t ws = {

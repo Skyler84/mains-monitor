@@ -4,5 +4,9 @@
 # CMakeLists in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.5)
 
+# Set custom partition table
+set(PARTITION_TABLE_CUSTOM_FILENAME "partitions.csv")
+set(PARTITION_TABLE_OFFSET 0x8000)
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(mains-monitor)
