@@ -45,16 +45,5 @@ typedef struct {
     uint32_t zero_crossings;        // Number of zero crossings detected
 } adc_statistics_t;
 
-
-// WebSocket data packet structure
-typedef struct {
-    float voltage_v;        // Mains voltage in volts
-    uint32_t timestamp_us;
-} ws_data_packet_t;
-
-// WebSocket batch structure for sending multiple samples at once
-#define WS_BATCH_SIZE 100
-typedef struct {
-    ws_data_packet_t samples[WS_BATCH_SIZE];
-    size_t count;
-} ws_batch_packet_t;
+// Latest statistics for web display
+extern adc_statistics_t latest_stats;

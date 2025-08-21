@@ -7,4 +7,5 @@ idf_component_register(
         "."
     EMBED_FILES 
         "web/static/index.html"
+        "web/static/electric_plug.png"
 )
