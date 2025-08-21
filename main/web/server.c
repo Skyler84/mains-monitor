@@ -4,6 +4,7 @@
 #include <stddef.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 
 static const char *TAG = "WEB_SERVER";
 
@@ -20,6 +21,39 @@ bool ws_client_connected = false;        // WebSocket client connection status
 // WebSocket batch variables
 ws_batch_packet_t current_batch = {0};
 size_t batch_index = 0;
+
+/*---------------------------------------------------------------
+        WebSocket Callback Functions
+---------------------------------------------------------------*/
+void ws_raw_data_callback(float voltage_mv, uint32_t sample_index)
+{
+    // WebSocket oscilloscope data collection (decimated)
+    ws_decimation_counter++;
+    if (ws_decimation_counter >= WS_DECIMATION_FACTOR && ws_client_connected) {
+        ws_decimation_counter = 0;
+        
+        // Remove DC bias from the filtered voltage before scaling
+        float ac_voltage_mv = voltage_mv - latest_stats.mean_voltage_mv;
+        
+        // Scale AC voltage to mains voltage
+        float mains_voltage = (ac_voltage_mv / 1000.0f) * TOTAL_SCALING;
+        
+        // Add sample to current batch
+        current_batch.samples[batch_index].voltage_v = mains_voltage;
+        current_batch.samples[batch_index].timestamp_us = esp_timer_get_time();
+        batch_index++;
+        
+        // Send batch when full
+        if (batch_index >= WS_BATCH_SIZE) {
+            current_batch.count = batch_index;
+            BaseType_t result = xQueueSend(ws_data_queue, &current_batch, 0); // Don't block in callback
+            if (result != pdTRUE) {
+                ESP_LOGW(TAG, "WebSocket queue full, dropping data batch");
+            }
+            batch_index = 0; // Reset batch
+        }
+    }
+}
 
 
 

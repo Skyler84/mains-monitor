@@ -21,14 +21,14 @@
 #define FILTER_SIZE                 5                   // Moving average filter size (5 samples)
 #define FILTER_ALPHA                0.1f               // Low-pass filter coefficient (0.1 = heavy filtering)
 
-// WebSocket oscilloscope configuration
-#define WS_SAMPLE_RATE_HZ           1000                // WebSocket data rate (1kHz for oscilloscope)
-#define WS_BUFFER_SIZE              200                 // WebSocket buffer size (200ms of data at 1kHz)
-#define WS_DECIMATION_FACTOR        10                  // Send every 10th sample (10kHz -> 1kHz)
 
 /*---------------------------------------------------*/
 /*                   Typedefs*/
 /*---------------------------------------------------*/
+
+// Maximum number of subscribers per callback type
+#define MAX_RAW_CALLBACKS       5
+#define MAX_STATISTICS_CALLBACKS 5
 
 // Statistics structure - all values in voltage domain
 typedef struct {
@@ -44,6 +44,20 @@ typedef struct {
     float frequency_hz;             // Measured frequency from zero crossings
     uint32_t zero_crossings;        // Number of zero crossings detected
 } adc_statistics_t;
+
+// Callback function types
+typedef void (*adc_raw_callback_t)(float voltage_mv, uint32_t sample_index);
+typedef void (*adc_statistics_callback_t)(const adc_statistics_t *stats);
+
+/*---------------------------------------------------*/
+/*                   Public API*/
+/*---------------------------------------------------*/
+
+// Callback subscription functions
+int adc_subscribe_raw_values(adc_raw_callback_t callback);
+int adc_subscribe_statistics(adc_statistics_callback_t callback);
+int adc_unsubscribe_raw_values(adc_raw_callback_t callback);
+int adc_unsubscribe_statistics(adc_statistics_callback_t callback);
 
 // Latest statistics for web display
 extern adc_statistics_t latest_stats;

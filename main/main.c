@@ -1,6 +1,7 @@
 #include "main.h"
 #include "wifi.h"
 #include "web/server.h"
+#include "web/server.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,6 +22,11 @@
 #include "nvs_flash.h"
 
 static const char *TAG = "ADC_MONITOR";
+
+// Callback subscription arrays
+static adc_raw_callback_t raw_callbacks[MAX_RAW_CALLBACKS] = {NULL};
+static adc_statistics_callback_t statistics_callbacks[MAX_STATISTICS_CALLBACKS] = {NULL};
+static SemaphoreHandle_t callback_mutex;
 
 // Dual buffer system - now stores voltage values in mV
 static float voltage_buffer_a[BUFFER_SIZE];
@@ -49,6 +55,103 @@ static SemaphoreHandle_t processing_semaphore;
 // Latest statistics for web display
 adc_statistics_t latest_stats = {0};
 
+/*---------------------------------------------------------------
+        Callback Subscription System
+---------------------------------------------------------------*/
+int adc_subscribe_raw_values(adc_raw_callback_t callback)
+{
+    if (callback == NULL) return -1;
+    
+    xSemaphoreTake(callback_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_RAW_CALLBACKS; i++) {
+        if (raw_callbacks[i] == NULL) {
+            raw_callbacks[i] = callback;
+            xSemaphoreGive(callback_mutex);
+            ESP_LOGI(TAG, "Raw value callback subscribed at index %d", i);
+            return i;
+        }
+    }
+    xSemaphoreGive(callback_mutex);
+    ESP_LOGW(TAG, "Failed to subscribe raw value callback - all slots full");
+    return -1;
+}
+
+int adc_subscribe_statistics(adc_statistics_callback_t callback)
+{
+    if (callback == NULL) return -1;
+    
+    xSemaphoreTake(callback_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_STATISTICS_CALLBACKS; i++) {
+        if (statistics_callbacks[i] == NULL) {
+            statistics_callbacks[i] = callback;
+            xSemaphoreGive(callback_mutex);
+            ESP_LOGI(TAG, "Statistics callback subscribed at index %d", i);
+            return i;
+        }
+    }
+    xSemaphoreGive(callback_mutex);
+    ESP_LOGW(TAG, "Failed to subscribe statistics callback - all slots full");
+    return -1;
+}
+
+int adc_unsubscribe_raw_values(adc_raw_callback_t callback)
+{
+    if (callback == NULL) return -1;
+    
+    xSemaphoreTake(callback_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_RAW_CALLBACKS; i++) {
+        if (raw_callbacks[i] == callback) {
+            raw_callbacks[i] = NULL;
+            xSemaphoreGive(callback_mutex);
+            ESP_LOGI(TAG, "Raw value callback unsubscribed from index %d", i);
+            return i;
+        }
+    }
+    xSemaphoreGive(callback_mutex);
+    ESP_LOGW(TAG, "Raw value callback not found for unsubscription");
+    return -1;
+}
+
+int adc_unsubscribe_statistics(adc_statistics_callback_t callback)
+{
+    if (callback == NULL) return -1;
+    
+    xSemaphoreTake(callback_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_STATISTICS_CALLBACKS; i++) {
+        if (statistics_callbacks[i] == callback) {
+            statistics_callbacks[i] = NULL;
+            xSemaphoreGive(callback_mutex);
+            ESP_LOGI(TAG, "Statistics callback unsubscribed from index %d", i);
+            return i;
+        }
+    }
+    xSemaphoreGive(callback_mutex);
+    ESP_LOGW(TAG, "Statistics callback not found for unsubscription");
+    return -1;
+}
+
+static void notify_raw_subscribers(float voltage_mv, uint32_t sample_index)
+{
+    // ISR-safe version - don't take mutex in ISR, just call callbacks directly
+    // Subscribers must be aware they might be called from ISR context
+    for (int i = 0; i < MAX_RAW_CALLBACKS; i++) {
+        if (raw_callbacks[i] != NULL) {
+            raw_callbacks[i](voltage_mv, sample_index);
+        }
+    }
+}
+
+static void notify_statistics_subscribers(const adc_statistics_t *stats)
+{
+    xSemaphoreTake(callback_mutex, portMAX_DELAY);
+    for (int i = 0; i < MAX_STATISTICS_CALLBACKS; i++) {
+        if (statistics_callbacks[i] != NULL) {
+            statistics_callbacks[i](stats);
+        }
+    }
+    xSemaphoreGive(callback_mutex);
+}
+
 // Function prototypes
 static bool example_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle);
 static void example_adc_calibration_deinit(adc_cali_handle_t handle);
@@ -75,9 +178,10 @@ void app_main(void)
     // Create synchronization primitives
     buffer_mutex = xSemaphoreCreateMutex();
     processing_semaphore = xSemaphoreCreateBinary();
+    callback_mutex = xSemaphoreCreateMutex();
     ws_data_queue = xQueueCreate(10, sizeof(ws_batch_packet_t)); // Queue for 10 WebSocket batch packets
     
-    if (buffer_mutex == NULL || processing_semaphore == NULL || ws_data_queue == NULL) {
+    if (buffer_mutex == NULL || processing_semaphore == NULL || callback_mutex == NULL || ws_data_queue == NULL) {
         ESP_LOGE(TAG, "Failed to create synchronization primitives");
         return;
     }
@@ -123,6 +227,9 @@ void app_main(void)
     wifi_apply_config();
     server = start_webserver();
     if (server) {
+        // Subscribe WebSocket to raw ADC data for oscilloscope functionality
+        adc_subscribe_raw_values(ws_raw_data_callback);
+        
         if (current_wifi_config.mode == 0) {
             ESP_LOGI(TAG, "Web server started in AP mode. Connect to WiFi '%s' and browse to http://192.168.4.1", current_wifi_config.ssid);
         } else {
@@ -211,33 +318,13 @@ static void IRAM_ATTR adc_timer_callback(void* arg)
     // Store filtered voltage sample in current buffer
     ((float*)current_voltage_buffer)[buffer_index] = filtered_voltage;
     
-    // WebSocket oscilloscope data collection (decimated)
-    ws_decimation_counter++;
-    if (ws_decimation_counter >= WS_DECIMATION_FACTOR && ws_client_connected) {
-        ws_decimation_counter = 0;
-        
-        // Remove DC bias from the filtered voltage before scaling
-        float ac_voltage_mv = filtered_voltage - latest_stats.mean_voltage_mv;
-        
-        // Scale AC voltage to mains voltage
-        float mains_voltage = (ac_voltage_mv / 1000.0f) * TOTAL_SCALING;
-        
-        // Add sample to current batch
-        current_batch.samples[batch_index].voltage_v = mains_voltage;
-        current_batch.samples[batch_index].timestamp_us = esp_timer_get_time();
-        batch_index++;
-        
-        // Send batch when full
-        if (batch_index >= WS_BATCH_SIZE) {
-            current_batch.count = batch_index;
-            xQueueSendFromISR(ws_data_queue, &current_batch, NULL);
-            batch_index = 0; // Reset batch
-        }
+    // Notify raw value subscribers (only if callbacks exist to avoid overhead)
+    // Note: We notify with the filtered voltage since that's what gets stored
+    if (raw_callbacks[0] != NULL) { // Quick check if any subscribers exist
+        notify_raw_subscribers(filtered_voltage, buffer_index);
     }
     
-    buffer_index++;
-    
-    // Check if buffer is full
+    buffer_index++;    // Check if buffer is full
     if (buffer_index >= BUFFER_SIZE) {
         // Buffer is full, switch buffers
         if (current_voltage_buffer == voltage_buffer_a) {
@@ -275,6 +362,9 @@ static void adc_processing_task(void *pvParameters)
                 
                 // Update latest stats for web display
                 latest_stats = stats;
+                
+                // Notify statistics subscribers
+                notify_statistics_subscribers(&stats);
                 
                 // Print statistics - all in voltage domain
                 // ESP_LOGI(TAG, "=== Voltage Statistics (10000 samples) ===");

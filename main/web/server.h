@@ -6,6 +6,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
+// WebSocket oscilloscope configuration
+#define WS_SAMPLE_RATE_HZ           1000                // WebSocket data rate (1kHz for oscilloscope)
+#define WS_BUFFER_SIZE              200                 // WebSocket buffer size (200ms of data at 1kHz)
+#define WS_DECIMATION_FACTOR        10                  // Send every 10th sample (10kHz -> 1kHz)
+#define WS_BATCH_SIZE 100                               // Number of samples per WebSocket batch
 
 
 // WebSocket data packet structure
@@ -15,7 +20,6 @@ typedef struct {
 } ws_data_packet_t;
 
 // WebSocket batch structure for sending multiple samples at once
-#define WS_BATCH_SIZE 100
 typedef struct {
     ws_data_packet_t samples[WS_BATCH_SIZE];
     size_t count;
@@ -41,4 +45,5 @@ esp_err_t api_wifi_get_handler(httpd_req_t *req);
 esp_err_t api_wifi_post_handler(httpd_req_t *req);
 esp_err_t ws_handler(httpd_req_t *req);
 void ws_data_task(void *pvParameters);
+void ws_raw_data_callback(float voltage_mv, uint32_t sample_index);
 httpd_handle_t start_webserver(void);
