@@ -1,4 +1,5 @@
 #include "nvs_logging.h"
+#include "rtc_time.h"
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -331,6 +332,7 @@ void nvs_logging_statistics_callback(const adc_statistics_t *stats)
     log_entry_t entry = {
         .magic = LOG_MAGIC_NUMBER,
         .timestamp_us = esp_timer_get_time(),
+        .timestamp_unix = rtc_get_time(),
         .mean_voltage_mv = stats->mean_voltage_mv,
         .rms_voltage_mv = stats->rms_voltage_mv,
         .ac_rms_voltage_mv = stats->ac_rms_voltage_mv,

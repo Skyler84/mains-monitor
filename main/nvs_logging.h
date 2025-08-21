@@ -3,6 +3,7 @@
 #include "main.h"
 #include "esp_err.h"
 #include "esp_partition.h"
+#include <time.h>
 
 // Logging configuration
 #define LOG_PARTITION_LABEL     "data_log"
@@ -15,7 +16,8 @@
 // Log entry structure - matches adc_statistics_t but with timestamp and magic
 typedef struct {
     uint32_t magic;                 // Magic number for validation
-    uint64_t timestamp_us;          // Timestamp in microseconds since boot
+    uint64_t timestamp_us;          // Legacy: microseconds since boot (for compatibility)
+    time_t timestamp_unix;          // Unix timestamp (seconds since epoch)
     float mean_voltage_mv;          // DC bias voltage
     float rms_voltage_mv;          // Total RMS voltage
     float ac_rms_voltage_mv;       // AC RMS voltage (DC bias removed)

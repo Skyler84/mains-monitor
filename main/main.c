@@ -1,6 +1,8 @@
 #include "main.h"
 #include "wifi.h"
 #include "web/server.h"
+#include "rtc_time.h"
+#include "nvs_logging.h"
 #include "nvs_logging.h"
 #include "web/server.h"
 
@@ -172,6 +174,9 @@ void app_main(void)
     // Initialize networking
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    
+    // Initialize RTC time management
+    ESP_ERROR_CHECK(rtc_init());
     
     // Load WiFi configuration from NVS
     wifi_load_config();

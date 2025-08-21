@@ -46,6 +46,8 @@ esp_err_t api_wifi_post_handler(httpd_req_t *req);
 esp_err_t api_history_status_get_handler(httpd_req_t *req);
 esp_err_t api_history_data_get_handler(httpd_req_t *req);
 esp_err_t api_history_clear_post_handler(httpd_req_t *req);
+esp_err_t api_time_get_handler(httpd_req_t *req);
+esp_err_t api_time_post_handler(httpd_req_t *req);
 esp_err_t ws_handler(httpd_req_t *req);
 void ws_data_task(void *pvParameters);
 void ws_raw_data_callback(float voltage_mv, uint32_t sample_index);

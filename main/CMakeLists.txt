@@ -2,6 +2,7 @@ idf_component_register(
     SRCS 
         "main.c"
         "wifi.c"
+        "rtc_time.c"
         "nvs_logging.c"
         "web/server.c"
     INCLUDE_DIRS 

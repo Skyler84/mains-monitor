@@ -347,6 +347,7 @@
                 <div class="tab-container">
                     <div class="tab-buttons">
                         <button class="tab-button active" onclick="showConfigTab('mains')">🔌 Mains Standards</button>
+                        <button class="tab-button" onclick="showConfigTab('time')">🕐 Time Sync</button>
                         <button class="tab-button" onclick="showConfigTab('wifi')">📶 WiFi Settings</button>
                     </div>
 
@@ -380,6 +381,46 @@
                                         <input type="radio" id="freq-60" name="frequency" value="60" onchange="updateMainsSettings()">
                                         <span>60 Hz (US/CA/JP)</span>
                                     </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Time Sync Configuration Tab -->
+                    <div class="tab-content" id="time-config-tab">
+                        <div class="chart-container">
+                            <div class="chart-title">🕐 Time Synchronization</div>
+                            <div style="max-width: 500px; margin: 0 auto;">
+                                <div class="settings-group" style="flex-direction: column; gap: 20px;">
+                                    
+                                    <!-- Current Time Display -->
+                                    <div class="time-display" style="text-align: center; padding: 20px; border: 1px solid #ddd; border-radius: 8px; background: #f9f9f9;">
+                                        <h3>Current Device Time</h3>
+                                        <div id="current-time" style="font-size: 18px; font-weight: bold; color: #333;">Loading...</div>
+                                        <div id="time-status" style="font-size: 14px; color: #666; margin-top: 5px;">Checking status...</div>
+                                    </div>
+
+                                    <!-- Auto Sync Button -->
+                                    <div style="text-align: center;">
+                                        <button class="btn btn-primary" onclick="syncTimeFromBrowser()" style="padding: 15px 30px; font-size: 16px;">
+                                            🔄 Sync Time from Browser
+                                        </button>
+                                        <div style="font-size: 12px; color: #666; margin-top: 10px;">
+                                            This will set the device time to match your browser's current time
+                                        </div>
+                                    </div>
+
+                                    <!-- Manual Time Entry -->
+                                    <div class="manual-time" style="border-top: 1px solid #ddd; padding-top: 20px;">
+                                        <h4>Manual Time Entry</h4>
+                                        <div style="display: flex; flex-direction: column; gap: 10px;">
+                                            <input type="datetime-local" id="manual-time-input" style="padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+                                            <button class="btn btn-secondary" onclick="setManualTime()">
+                                                ⏰ Set Manual Time
+                                            </button>
+                                        </div>
+                                    </div>
+
                                 </div>
                             </div>
                         </div>
@@ -954,6 +995,97 @@
                 button.className = 'btn btn-secondary';
             }
         }
+        
+        // Time synchronization functions
+        function updateTimeDisplay() {
+            fetch('/api/time')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        document.getElementById('current-time').textContent = data.data.human_readable;
+                        
+                        const statusElement = document.getElementById('time-status');
+                        if (data.data.time_set) {
+                            statusElement.textContent = '✅ Time is synchronized';
+                            statusElement.style.color = '#28a745';
+                        } else {
+                            statusElement.textContent = '⚠️ Time not set - please sync';
+                            statusElement.style.color = '#ffc107';
+                        }
+                    }
+                })
+                .catch(error => {
+                    console.error('Failed to fetch time:', error);
+                    document.getElementById('current-time').textContent = 'Error loading time';
+                    document.getElementById('time-status').textContent = '❌ Failed to fetch time';
+                });
+        }
+        
+        function syncTimeFromBrowser() {
+            // Get current time from browser
+            const now = new Date();
+            const timestamp = Math.floor(now.getTime() / 1000); // Convert to Unix timestamp
+            
+            fetch('/api/time', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    timestamp: timestamp
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    alert('✅ Time synchronized successfully!\\n\\nDevice time: ' + data.time);
+                    updateTimeDisplay(); // Refresh the display
+                } else {
+                    alert('❌ Failed to sync time: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Failed to sync time:', error);
+                alert('❌ Network error while syncing time');
+            });
+        }
+        
+        function setManualTime() {
+            const manualTimeInput = document.getElementById('manual-time-input');
+            const timeValue = manualTimeInput.value;
+            
+            if (!timeValue) {
+                alert('Please select a date and time first');
+                return;
+            }
+            
+            // Convert datetime-local to ISO8601 format
+            const iso8601 = new Date(timeValue).toISOString();
+            
+            fetch('/api/time', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    iso8601: iso8601
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    alert('✅ Time set successfully!\\n\\nDevice time: ' + data.time);
+                    updateTimeDisplay(); // Refresh the display
+                    manualTimeInput.value = ''; // Clear the input
+                } else {
+                    alert('❌ Failed to set time: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Failed to set time:', error);
+                alert('❌ Network error while setting time');
+            });
+        }
 
         function showTab(tabName) {
             // Hide all monitoring sub-tabs
@@ -1007,6 +1139,11 @@
             
             // Add active class to clicked button
             event.target.classList.add('active');
+            
+            // Update time display when time tab is shown
+            if (tabName === 'time') {
+                updateTimeDisplay();
+            }
         }
         
         function startAutoUpdate() {
@@ -1027,6 +1164,7 @@
             initCharts();
             startAutoUpdate();
             updateHistoryInfo();
+            updateTimeDisplay(); // Initialize time display
         };
         
         // Handle page visibility changes to pause/resume updates

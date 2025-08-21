@@ -1,6 +1,7 @@
 #include "server.h"
 #include "wifi.h"
 #include "nvs_logging.h"
+#include "rtc_time.h"
 
 #include <stddef.h>
 #include <stdlib.h>
@@ -285,10 +286,19 @@ esp_err_t api_history_data_get_handler(httpd_req_t *req)
     
     // Send entries
     for (uint32_t i = 0; i < entries_read; i++) {
-        char entry_json[512];
+        char entry_json[600];
+        
+        // Convert Unix timestamp to ISO8601 string
+        char iso8601_time[32] = "null";
+        if (entries[i].timestamp_unix > 0) {
+            rtc_time_to_iso8601(entries[i].timestamp_unix, iso8601_time, sizeof(iso8601_time));
+        }
+        
         snprintf(entry_json, sizeof(entry_json),
             "%s{"
             "\"timestamp_us\":%llu,"
+            "\"timestamp_unix\":%lld,"
+            "\"timestamp_iso8601\":\"%s\","
             "\"mean_voltage_mv\":%.2f,"
             "\"rms_voltage_mv\":%.2f,"
             "\"ac_rms_voltage_mv\":%.2f,"
@@ -303,6 +313,8 @@ esp_err_t api_history_data_get_handler(httpd_req_t *req)
             "}",
             (i > 0) ? "," : "",
             entries[i].timestamp_us,
+            entries[i].timestamp_unix,
+            iso8601_time,
             entries[i].mean_voltage_mv,
             entries[i].rms_voltage_mv,
             entries[i].ac_rms_voltage_mv,
@@ -338,6 +350,104 @@ esp_err_t api_history_clear_post_handler(httpd_req_t *req)
         httpd_resp_set_status(req, "500 Internal Server Error");
         httpd_resp_set_type(req, "application/json");
         return httpd_resp_send(req, "{\"status\":\"error\",\"message\":\"Failed to clear history\"}", HTTPD_RESP_USE_STRLEN);
+    }
+}
+
+/*---------------------------------------------------------------
+        RTC Time API Handlers
+---------------------------------------------------------------*/
+esp_err_t api_time_get_handler(httpd_req_t *req)
+{
+    time_t current_time = rtc_get_time();
+    bool time_set = rtc_is_time_set();
+    
+    char time_string[64];
+    char iso8601_string[32];
+    
+    rtc_get_time_string(time_string, sizeof(time_string));
+    rtc_time_to_iso8601(current_time, iso8601_string, sizeof(iso8601_string));
+    
+    char json_response[256];
+    snprintf(json_response, sizeof(json_response),
+        "{"
+        "\"status\":\"success\","
+        "\"data\":{"
+        "\"unix_timestamp\":%lld,"
+        "\"iso8601\":\"%s\","
+        "\"human_readable\":\"%s\","
+        "\"time_set\":%s"
+        "}"
+        "}",
+        current_time,
+        iso8601_string,
+        time_string,
+        time_set ? "true" : "false"
+    );
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
+}
+
+esp_err_t api_time_post_handler(httpd_req_t *req)
+{
+    char buf[100];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"status\":\"error\",\"message\":\"No data received\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    
+    buf[ret] = '\0';
+    
+    // Parse JSON: {"timestamp": 1234567890} or {"iso8601": "2023-01-01T00:00:00Z"}
+    char *timestamp_start = strstr(buf, "\"timestamp\":");
+    char *iso8601_start = strstr(buf, "\"iso8601\":\"");
+    
+    time_t new_time = 0;
+    esp_err_t parse_result = ESP_ERR_INVALID_ARG;
+    
+    if (timestamp_start) {
+        // Parse Unix timestamp
+        timestamp_start += 12; // Skip "timestamp":
+        new_time = atol(timestamp_start);
+        if (new_time > 1577836800) { // Sanity check: after 2020-01-01
+            parse_result = ESP_OK;
+        }
+    } else if (iso8601_start) {
+        // Parse ISO8601 string
+        iso8601_start += 11; // Skip "iso8601":"
+        char *iso8601_end = strchr(iso8601_start, '"');
+        if (iso8601_end) {
+            *iso8601_end = '\0';
+            parse_result = rtc_iso8601_to_time(iso8601_start, &new_time);
+        }
+    }
+    
+    if (parse_result == ESP_OK) {
+        esp_err_t set_result = rtc_set_time(new_time);
+        if (set_result == ESP_OK) {
+            char time_str[64];
+            rtc_get_time_string(time_str, sizeof(time_str));
+            
+            char response[200];
+            snprintf(response, sizeof(response),
+                "{\"status\":\"success\",\"message\":\"Time set successfully\",\"time\":\"%s\"}",
+                time_str);
+            
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+            return httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+        } else {
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            httpd_resp_set_type(req, "application/json");
+            return httpd_resp_send(req, "{\"status\":\"error\",\"message\":\"Failed to set system time\"}", HTTPD_RESP_USE_STRLEN);
+        }
+    } else {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"status\":\"error\",\"message\":\"Invalid time format. Use {\\\"timestamp\\\": 1234567890} or {\\\"iso8601\\\": \\\"2023-01-01T00:00:00Z\\\"}\"}", HTTPD_RESP_USE_STRLEN);
     }
 }
 
@@ -534,6 +644,24 @@ httpd_handle_t start_webserver(void)
             .user_ctx  = NULL
         };
         httpd_register_uri_handler(server, &api_history_clear);
+
+        // Time GET handler
+        httpd_uri_t api_time_get = {
+            .uri       = "/api/time",
+            .method    = HTTP_GET,
+            .handler   = api_time_get_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(server, &api_time_get);
+
+        // Time POST handler (for setting time)
+        httpd_uri_t api_time_post = {
+            .uri       = "/api/time",
+            .method    = HTTP_POST,
+            .handler   = api_time_post_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(server, &api_time_post);
 
         // WebSocket oscilloscope handler
         httpd_uri_t ws = {
