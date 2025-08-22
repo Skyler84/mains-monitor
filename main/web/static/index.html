@@ -535,9 +535,11 @@
                 frequencyChart.options.scales.y.min = mainsConfig.frequencyRange.min;
                 frequencyChart.options.scales.y.max = mainsConfig.frequencyRange.max;
                 
-                // Update voltage chart Y-axis  
+                // Update voltage chart Y-axes
                 voltageChart.options.scales.y.min = mainsConfig.voltageRange.min;
                 voltageChart.options.scales.y.max = mainsConfig.voltageRange.max;
+                voltageChart.options.scales.y1.min = mainsConfig.voltageRange.min * 2.5;
+                voltageChart.options.scales.y1.max = mainsConfig.voltageRange.max * 2.8;
                 
                 // Refresh charts
                 frequencyChart.update();
@@ -629,7 +631,8 @@
                             pointHoverRadius: 1,
                             borderWidth: 2,
                             fill: false,
-                            spanGaps: true
+                            spanGaps: true,
+                            yAxisID: 'y'
                         },
                         {
                             label: 'Peak-to-Peak (V)',
@@ -641,7 +644,8 @@
                             pointHoverRadius: 1,
                             borderWidth: 2,
                             fill: false,
-                            spanGaps: true
+                            spanGaps: true,
+                            yAxisID: 'y1'
                         }
                     ]
                 },
@@ -668,12 +672,42 @@
                             }
                         },
                         y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
                             title: {
                                 display: true,
-                                text: 'Voltage (V)'
+                                text: 'AC RMS Voltage (V)',
+                                color: '#dc3545'
                             },
                             min: mainsConfig.voltageRange.min,
-                            max: mainsConfig.voltageRange.max
+                            max: mainsConfig.voltageRange.max,
+                            grid: {
+                                drawOnChartArea: false,
+                            },
+                            ticks: {
+                                color: '#dc3545'
+                            }
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            title: {
+                                display: true,
+                                text: 'Peak-to-Peak Voltage (V)',
+                                color: '#ffc107'
+                            },
+                            min: mainsConfig.voltageRange.min * 2.5, // Peak-to-peak is roughly 2.8x RMS
+                            max: mainsConfig.voltageRange.max * 2.8,
+                            ticks: {
+                                color: '#ffc107'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: true
                         }
                     }
                 }
@@ -814,12 +848,12 @@
             
             const acRmsData = historyData.map(d => ({
                 x: d.timestamp,
-                y: d.ac_rms
+                y: d.acRms
             }));
             
             const peakPeakData = historyData.map(d => ({
                 x: d.timestamp,
-                y: d.peak_peak
+                y: d.peakPeak
             }));
             
             // Update frequency chart
