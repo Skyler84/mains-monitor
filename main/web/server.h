@@ -46,6 +46,7 @@ esp_err_t api_wifi_post_handler(httpd_req_t *req);
 esp_err_t api_history_status_get_handler(httpd_req_t *req);
 esp_err_t api_history_data_get_handler(httpd_req_t *req);
 esp_err_t api_history_clear_post_handler(httpd_req_t *req);
+esp_err_t api_history_erase_post_handler(httpd_req_t *req);
 esp_err_t api_time_get_handler(httpd_req_t *req);
 esp_err_t api_time_post_handler(httpd_req_t *req);
 esp_err_t ws_handler(httpd_req_t *req);

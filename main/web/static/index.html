@@ -277,6 +277,7 @@
             <button class="btn btn-secondary" onclick="toggleLogging()" id="log-button">📊 Start Logging</button>
             <button class="btn btn-primary" onclick="loadHistoryFromServer()">📥 Load from Flash</button>
             <button class="btn btn-danger" onclick="clearHistory()">🗑️ Clear History</button>
+            <button class="btn btn-danger" onclick="eraseFlashPartition()" style="background-color: #dc3545; border-color: #dc3545;">🔥 Erase Flash</button>
             <button class="btn btn-secondary" onclick="toggleBackgroundLogging()" id="background-button">🌙 Background Off</button>
         </div>
 
@@ -924,6 +925,42 @@
             .catch(error => {
                 console.error('Failed to clear history:', error);
                 alert('Failed to clear history');
+            });
+        }
+        
+        function eraseFlashPartition() {
+            if (!confirm('⚠️ DANGER: This will permanently erase ALL data from the flash storage partition!\n\nThis operation cannot be undone. Are you absolutely sure?')) {
+                return;
+            }
+            
+            // Second confirmation for this destructive operation
+            if (!confirm('🔥 FINAL WARNING: You are about to erase the entire logging partition.\n\nThis will destroy all historical data permanently. Continue?')) {
+                return;
+            }
+            
+            // Erase flash partition
+            fetch('/api/history/erase', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    // Clear client-side history as well
+                    historyData = [];
+                    updateCharts();
+                    updateHistoryInfo();
+                    alert('✅ Flash partition erased successfully');
+                    console.log('Flash partition erased successfully');
+                } else {
+                    alert('❌ Failed to erase flash partition: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Failed to erase flash partition:', error);
+                alert('❌ Failed to erase flash partition: ' + error.message);
             });
         }
         

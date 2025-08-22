@@ -353,6 +353,25 @@ esp_err_t api_history_clear_post_handler(httpd_req_t *req)
     }
 }
 
+esp_err_t api_history_erase_post_handler(httpd_req_t *req)
+{
+    ESP_LOGW(TAG, "FLASH PARTITION ERASE requested - this will destroy all historical data!");
+    
+    esp_err_t ret = nvs_logging_erase_all();
+    
+    if (ret == ESP_OK) {
+        ESP_LOGW(TAG, "Flash partition erased successfully");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        return httpd_resp_send(req, "{\"status\":\"success\",\"message\":\"Flash partition erased successfully\"}", HTTPD_RESP_USE_STRLEN);
+    } else {
+        ESP_LOGE(TAG, "Failed to erase flash partition: %s", esp_err_to_name(ret));
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"status\":\"error\",\"message\":\"Failed to erase flash partition\"}", HTTPD_RESP_USE_STRLEN);
+    }
+}
+
 /*---------------------------------------------------------------
         RTC Time API Handlers
 ---------------------------------------------------------------*/
@@ -644,6 +663,15 @@ httpd_handle_t start_webserver(void)
             .user_ctx  = NULL
         };
         httpd_register_uri_handler(server, &api_history_clear);
+
+        // History erase POST handler (destructive flash partition erase)
+        httpd_uri_t api_history_erase = {
+            .uri       = "/api/history/erase",
+            .method    = HTTP_POST,
+            .handler   = api_history_erase_post_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(server, &api_history_erase);
 
         // Time GET handler
         httpd_uri_t api_time_get = {
