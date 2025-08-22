@@ -293,6 +293,7 @@
                 <div class="history-info">
                     <span id="history-count">No data logged</span> | 
                     <span id="history-duration">--</span> |
+                    <span id="history-time-source">--</span> |
                     <span id="background-status">Background logging: Off</span>
                 </div>
 
@@ -488,6 +489,7 @@
         let backgroundLogging = false; // Continue logging when tab is hidden
         let historyData = [];
         let maxHistoryPoints = 5000; // Keep last 5000 measurements
+        let historyTimeSource = 'unknown'; // Track if using real time or boot time
         let frequencyChart, voltageChart, oscilloscopeChart;
         
         // WebSocket oscilloscope variables
@@ -781,10 +783,15 @@
             historyData.push({
                 timestamp: timestamp,
                 frequency: data.frequency,
-                ac_rms: data.mains_rms,
-                peak_peak: data.mains_peak,
-                dc_bias: data.dc_bias
+                acRms: data.mains_rms,
+                peakPeak: data.mains_peak,
+                rawMean: data.dc_bias,
+                rawRms: data.ac_rms,
+                rawAcRms: data.ac_rms
             });
+            
+            // Set time source for live data
+            historyTimeSource = 'live';
             
             // Keep only the last maxHistoryPoints
             if (historyData.length > maxHistoryPoints) {
@@ -828,11 +835,13 @@
         function updateHistoryInfo() {
             const countElement = document.getElementById('history-count');
             const durationElement = document.getElementById('history-duration');
+            const timeSourceElement = document.getElementById('history-time-source');
             
             // Update with client-side history data first
             if (historyData.length === 0) {
                 countElement.textContent = 'No data logged';
                 durationElement.textContent = '--';
+                timeSourceElement.textContent = '--';
             } else {
                 countElement.textContent = `${historyData.length} data points`;
                 
@@ -841,6 +850,18 @@
                     durationElement.textContent = `${duration.toFixed(1)} minutes logged`;
                 } else {
                     durationElement.textContent = 'Just started';
+                }
+                
+                // Show time source
+                if (historyTimeSource === 'real') {
+                    timeSourceElement.textContent = 'Real time';
+                    timeSourceElement.style.color = '#28a745'; // Green
+                } else if (historyTimeSource === 'boot_relative') {
+                    timeSourceElement.textContent = 'Boot time (relative)';
+                    timeSourceElement.style.color = '#ffc107'; // Orange
+                } else {
+                    timeSourceElement.textContent = 'Live data';
+                    timeSourceElement.style.color = '#007bff'; // Blue
                 }
             }
             
@@ -874,22 +895,47 @@
                 .then(data => {
                     if (data.status === 'success' && data.data.entries.length > 0) {
                         // Convert server data to client format
-                        const serverHistory = data.data.entries.map(entry => ({
-                            timestamp: entry.timestamp_us / 1000, // Convert to milliseconds
-                            frequency: entry.frequency_hz,
-                            acRms: entry.ac_rms_voltage_scaled,
-                            peakPeak: entry.peak_to_peak_scaled,
-                            rawMean: entry.mean_voltage_mv,
-                            rawRms: entry.rms_voltage_mv,
-                            rawAcRms: entry.ac_rms_voltage_mv
-                        }));
+                        const serverHistory = data.data.entries.map(entry => {
+                            // Check if we have real time (after 2020) or just boot time
+                            const hasRealTime = entry.timestamp_unix > 1577836800; // After 2020-01-01
+                            
+                            let timestamp;
+                            if (hasRealTime) {
+                                // Use real Unix timestamp (convert seconds to milliseconds)
+                                timestamp = entry.timestamp_unix * 1000;
+                            } else {
+                                // Use boot time: convert microseconds to milliseconds and add to a base date
+                                // This will show the relative timing correctly
+                                const bootTimeMs = entry.timestamp_us / 1000;
+                                // Use current time as base, minus the boot duration, so newest data appears "now"
+                                const nowMs = Date.now();
+                                const maxBootTimeMs = data.data.entries.length > 0 ? 
+                                    Math.max(...data.data.entries.map(e => e.timestamp_us / 1000)) : bootTimeMs;
+                                timestamp = nowMs - (maxBootTimeMs - bootTimeMs);
+                            }
+                            
+                            return {
+                                timestamp: timestamp,
+                                frequency: entry.frequency_hz,
+                                acRms: entry.ac_rms_voltage_scaled,
+                                peakPeak: entry.peak_to_peak_scaled,
+                                rawMean: entry.mean_voltage_mv,
+                                rawRms: entry.rms_voltage_mv,
+                                rawAcRms: entry.ac_rms_voltage_mv
+                            };
+                        });
                         
                         // Replace current history with server data
                         historyData = serverHistory;
+                        
+                        // Set time source based on data
+                        const hasRealTime = data.data.entries.length > 0 && data.data.entries[0].timestamp_unix > 1577836800;
+                        historyTimeSource = hasRealTime ? 'real' : 'boot_relative';
+                        
                         updateCharts();
                         updateHistoryInfo();
                         
-                        console.log(`Loaded ${data.data.entries.length} entries from server`);
+                        console.log(`Loaded ${data.data.entries.length} entries from server (${hasRealTime ? 'real time' : 'boot time relative'})`);
                     }
                 })
                 .catch(error => {
@@ -915,6 +961,7 @@
                 if (data.status === 'success') {
                     // Clear client-side history
                     historyData = [];
+                    historyTimeSource = 'unknown';
                     updateCharts();
                     updateHistoryInfo();
                     console.log('History cleared successfully');
@@ -950,6 +997,7 @@
                 if (data.status === 'success') {
                     // Clear client-side history as well
                     historyData = [];
+                    historyTimeSource = 'unknown';
                     updateCharts();
                     updateHistoryInfo();
                     alert('✅ Flash partition erased successfully');
@@ -1003,6 +1051,7 @@
             }
             
             historyData = [];
+            historyTimeSource = 'unknown';
             updateCharts();
             updateHistoryInfo();
         }
