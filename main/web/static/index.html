@@ -350,6 +350,7 @@
                     <div class="tab-buttons">
                         <button class="tab-button active" onclick="showConfigTab('mains')">🔌 Mains Standards</button>
                         <button class="tab-button" onclick="showConfigTab('time')">🕐 Time Sync</button>
+                        <button class="tab-button" onclick="showConfigTab('logging')">📝 Logging Settings</button>
                         <button class="tab-button" onclick="showConfigTab('wifi')">📶 WiFi Settings</button>
                     </div>
 
@@ -423,6 +424,70 @@
                                         </div>
                                     </div>
 
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Logging Configuration Tab -->
+                    <div class="tab-content" id="logging-config-tab">
+                        <div class="settings-section">
+                            <div class="settings-title">📝 Logging Configuration</div>
+                            <div class="settings-group">
+                                <!-- Current Logging Status -->
+                                <div class="info-box" style="background: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 4px solid #17a2b8; margin-bottom: 20px;">
+                                    <h4 style="margin-top: 0;">Current Logging Status</h4>
+                                    <div id="logging-status">Loading...</div>
+                                </div>
+
+                                <!-- Logging Frequency Configuration -->
+                                <div class="config-group" style="margin-bottom: 25px;">
+                                    <label for="log-interval" style="display: block; font-weight: bold; margin-bottom: 10px;">Logging Interval:</label>
+                                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                                        <input type="range" id="log-interval" min="1" max="300" value="5" style="flex: 1;" oninput="updateIntervalDisplay()">
+                                        <span id="interval-display" style="min-width: 80px; font-weight: bold;">5 seconds</span>
+                                    </div>
+                                    <div style="font-size: 12px; color: #666;">
+                                        Range: 1 second to 5 minutes. Lower intervals provide more detailed logging but use more flash storage.
+                                    </div>
+                                </div>
+
+                                <!-- Data Averaging Configuration -->
+                                <div class="config-group" style="margin-bottom: 25px;">
+                                    <label style="display: block; font-weight: bold; margin-bottom: 10px;">Data Processing:</label>
+                                    <div class="radio-group">
+                                        <div class="radio-option">
+                                            <input type="radio" id="averaging-on" name="averaging" value="true" checked onchange="updateAveragingDisplay()">
+                                            <span>Enable Averaging - Average multiple readings over the logging interval for smoother data</span>
+                                        </div>
+                                        <div class="radio-option">
+                                            <input type="radio" id="averaging-off" name="averaging" value="false" onchange="updateAveragingDisplay()">
+                                            <span>Raw Data - Log individual readings at the specified interval (may be noisier)</span>
+                                        </div>
+                                    </div>
+                                    <div id="averaging-info" style="font-size: 12px; color: #666; margin-top: 10px;">
+                                        Averaging enabled: Multiple ADC readings will be averaged before logging to reduce noise and provide more stable measurements.
+                                    </div>
+                                </div>
+
+                                <!-- Save/Load Controls -->
+                                <div style="text-align: center; margin-top: 30px;">
+                                    <button class="btn btn-primary" onclick="saveLoggingConfig()" style="margin-right: 10px;">💾 Save Logging Settings</button>
+                                    <button class="btn btn-secondary" onclick="loadLoggingConfig()">🔄 Reload Current</button>
+                                </div>
+
+                                <div id="logging-config-status" style="text-align: center; margin-top: 15px; padding: 10px; border-radius: 4px; display: none;">
+                                </div>
+
+                                <!-- Info Box -->
+                                <div style="background: #fff3cd; padding: 15px; border-radius: 8px; border-left: 4px solid #ffc107; margin-top: 20px;">
+                                    <strong>💡 Tips:</strong>
+                                    <ul style="margin: 10px 0; padding-left: 20px;">
+                                        <li><strong>Short intervals (1-5s):</strong> Good for troubleshooting and detailed monitoring</li>
+                                        <li><strong>Medium intervals (10-60s):</strong> Good balance for general monitoring</li>
+                                        <li><strong>Long intervals (2-5min):</strong> Good for long-term trend monitoring, saves flash storage</li>
+                                        <li><strong>Averaging:</strong> Reduces noise in logged data, especially useful for longer intervals</li>
+                                    </ul>
                                 </div>
                             </div>
                         </div>
@@ -1264,6 +1329,12 @@
             if (tabName === 'time') {
                 updateTimeDisplay();
             }
+            
+            // Load logging configuration when logging tab is shown
+            if (tabName === 'logging') {
+                loadLoggingConfig();
+                updateLoggingStatus();
+            }
         }
         
         function startAutoUpdate() {
@@ -1493,6 +1564,151 @@
         
         function showWiFiStatus(message, type) {
             const statusDiv = document.getElementById('wifi-status');
+            statusDiv.textContent = message;
+            statusDiv.style.display = 'block';
+            
+            if (type === 'success') {
+                statusDiv.style.backgroundColor = 'rgba(40, 167, 69, 0.1)';
+                statusDiv.style.color = '#28a745';
+                statusDiv.style.borderLeft = '4px solid #28a745';
+            } else {
+                statusDiv.style.backgroundColor = 'rgba(220, 53, 69, 0.1)';
+                statusDiv.style.color = '#dc3545';
+                statusDiv.style.borderLeft = '4px solid #dc3545';
+            }
+            
+            // Hide status after 5 seconds
+            setTimeout(() => {
+                statusDiv.style.display = 'none';
+            }, 5000);
+        }
+        
+        // Logging Configuration Functions
+        function updateIntervalDisplay() {
+            const intervalSlider = document.getElementById('log-interval');
+            const intervalDisplay = document.getElementById('interval-display');
+            const value = parseInt(intervalSlider.value);
+            
+            if (value < 60) {
+                intervalDisplay.textContent = value + ' second' + (value === 1 ? '' : 's');
+            } else {
+                const minutes = Math.floor(value / 60);
+                const seconds = value % 60;
+                if (seconds === 0) {
+                    intervalDisplay.textContent = minutes + ' minute' + (minutes === 1 ? '' : 's');
+                } else {
+                    intervalDisplay.textContent = minutes + 'm ' + seconds + 's';
+                }
+            }
+        }
+        
+        function updateAveragingDisplay() {
+            const averagingInfo = document.getElementById('averaging-info');
+            const isAveragingEnabled = document.querySelector('input[name="averaging"]:checked').value === 'true';
+            
+            if (isAveragingEnabled) {
+                averagingInfo.textContent = 'Averaging enabled: Multiple ADC readings will be averaged before logging to reduce noise and provide more stable measurements.';
+                averagingInfo.style.color = '#28a745';
+            } else {
+                averagingInfo.textContent = 'Raw data mode: Individual readings will be logged at the specified interval without averaging (may show more noise).';
+                averagingInfo.style.color = '#dc3545';
+            }
+        }
+        
+        function loadLoggingConfig() {
+            fetch('/api/logging/config')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        // Update interval slider
+                        document.getElementById('log-interval').value = data.data.log_interval_seconds;
+                        updateIntervalDisplay();
+                        
+                        // Update averaging radio buttons
+                        const averagingValue = data.data.auto_averaging ? 'true' : 'false';
+                        document.querySelector(`input[name="averaging"][value="${averagingValue}"]`).checked = true;
+                        updateAveragingDisplay();
+                        
+                        console.log('Loaded logging configuration:', data.data);
+                    } else {
+                        console.error('Failed to load logging configuration:', data.message);
+                        showLoggingConfigStatus('Failed to load configuration: ' + data.message, 'error');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading logging configuration:', error);
+                    showLoggingConfigStatus('Error loading configuration: ' + error.message, 'error');
+                });
+        }
+        
+        function saveLoggingConfig() {
+            const intervalValue = parseInt(document.getElementById('log-interval').value);
+            const averagingValue = document.querySelector('input[name="averaging"]:checked').value === 'true';
+            
+            const config = {
+                log_interval_seconds: intervalValue,
+                auto_averaging: averagingValue
+            };
+            
+            fetch('/api/logging/config', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(config)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    showLoggingConfigStatus('Logging configuration saved successfully!', 'success');
+                    console.log('Saved logging configuration:', config);
+                    // Refresh the logging status after saving
+                    updateLoggingStatus();
+                } else {
+                    showLoggingConfigStatus('Failed to save configuration: ' + data.message, 'error');
+                    console.error('Failed to save logging configuration:', data.message);
+                }
+            })
+            .catch(error => {
+                showLoggingConfigStatus('Error saving configuration: ' + error.message, 'error');
+                console.error('Error saving logging configuration:', error);
+            });
+        }
+        
+        function updateLoggingStatus() {
+            fetch('/api/history/status')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        const status = data.data;
+                        const statusHtml = `
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                                <div>
+                                    <strong>Logging:</strong> ${status.logging_active ? '✅ Active' : '❌ Inactive'}
+                                </div>
+                                <div>
+                                    <strong>Total Entries:</strong> ${status.total_entries.toLocaleString()}
+                                </div>
+                                <div>
+                                    <strong>Storage Used:</strong> ${((status.current_offset / status.partition_size) * 100).toFixed(1)}%
+                                </div>
+                                <div>
+                                    <strong>Partition Size:</strong> ${(status.partition_size / 1024).toFixed(0)} KB
+                                </div>
+                            </div>
+                        `;
+                        document.getElementById('logging-status').innerHTML = statusHtml;
+                    } else {
+                        document.getElementById('logging-status').innerHTML = '<span style="color: #dc3545;">Error loading status: ' + data.message + '</span>';
+                    }
+                })
+                .catch(error => {
+                    document.getElementById('logging-status').innerHTML = '<span style="color: #dc3545;">Error: ' + error.message + '</span>';
+                });
+        }
+        
+        function showLoggingConfigStatus(message, type) {
+            const statusDiv = document.getElementById('logging-config-status');
             statusDiv.textContent = message;
             statusDiv.style.display = 'block';
             

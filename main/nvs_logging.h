@@ -13,6 +13,17 @@
 #define LOG_BUFFER_BLOCKS       16                      // Number of blocks to keep as buffer
 #define LOG_MAGIC_NUMBER        0xADC12345              // Magic number to identify valid entries
 
+// Logging frequency configuration
+#define LOG_FREQ_MIN_SECONDS    1                       // Minimum logging interval (1 second)
+#define LOG_FREQ_MAX_SECONDS    300                     // Maximum logging interval (5 minutes)
+#define LOG_FREQ_DEFAULT        1                       // Default logging interval (1 second)
+
+// Logging configuration structure
+typedef struct {
+    uint32_t log_interval_seconds;  // Logging interval in seconds (1-300)
+    bool auto_averaging;            // Whether to average data over the interval
+} log_config_t;
+
 // Log entry structure - slimmed down for efficient flash storage
 typedef struct {
     uint32_t magic;                 // Magic number for validation
@@ -47,6 +58,10 @@ esp_err_t nvs_logging_stop(void);
 
 // Get logging status
 esp_err_t nvs_logging_get_status(log_status_t *status);
+
+// Configure logging frequency and averaging
+esp_err_t nvs_logging_set_config(const log_config_t *config);
+esp_err_t nvs_logging_get_config(log_config_t *config);
 
 // Read log entries in reverse chronological order (newest first)
 // start_offset: number of recent entries to skip (for pagination)

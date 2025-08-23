@@ -6,6 +6,7 @@
 #include "esp_crc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "nvs.h"
 
 static const char *TAG = "NVS_LOGGING";
 
@@ -16,6 +17,16 @@ static uint32_t total_entries_written = 0;
 static bool logging_initialized = false;
 static bool logging_active = false;
 static SemaphoreHandle_t logging_mutex = NULL;
+
+// Configuration and averaging state
+static log_config_t current_config = {
+    .log_interval_seconds = LOG_FREQ_DEFAULT,
+    .auto_averaging = true
+};
+static uint64_t last_log_time_us = 0;
+static uint32_t stats_count = 0;
+static adc_statistics_t accumulated_stats = {0};
+static bool have_accumulated_data = false;
 
 /*---------------------------------------------------------------
         Private Functions
@@ -108,6 +119,138 @@ static esp_err_t ensure_erased_ahead(void)
     return ESP_OK;
 }
 
+// Load configuration from NVS
+static esp_err_t load_config_from_nvs(void)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("log_config", NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGI(TAG, "No existing config found, using defaults");
+        return ESP_OK; // Use defaults
+    }
+    
+    size_t required_size = sizeof(log_config_t);
+    err = nvs_get_blob(nvs_handle, "config", &current_config, &required_size);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to load config from NVS: %s", esp_err_to_name(err));
+        // Reset to defaults on error
+        current_config.log_interval_seconds = LOG_FREQ_DEFAULT;
+        current_config.auto_averaging = true;
+    } else {
+        ESP_LOGI(TAG, "Loaded config: interval=%lus, averaging=%s", 
+                 current_config.log_interval_seconds,
+                 current_config.auto_averaging ? "enabled" : "disabled");
+    }
+    
+    nvs_close(nvs_handle);
+    return ESP_OK;
+}
+
+// Save configuration to NVS
+static esp_err_t save_config_to_nvs(void)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open("log_config", NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS for config save: %s", esp_err_to_name(err));
+        return err;
+    }
+    
+    err = nvs_set_blob(nvs_handle, "config", &current_config, sizeof(log_config_t));
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs_handle);
+    }
+    
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to save config to NVS: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "Saved config: interval=%lus, averaging=%s", 
+                 current_config.log_interval_seconds,
+                 current_config.auto_averaging ? "enabled" : "disabled");
+    }
+    
+    nvs_close(nvs_handle);
+    return err;
+}
+
+// Accumulate statistics for averaging
+static void accumulate_statistics(const adc_statistics_t *stats)
+{
+    if (!have_accumulated_data) {
+        // First sample - initialize
+        accumulated_stats = *stats;
+        stats_count = 1;
+        have_accumulated_data = true;
+    } else {
+        // Accumulate values for averaging
+        accumulated_stats.ac_rms_voltage_scaled += stats->ac_rms_voltage_scaled;
+        accumulated_stats.peak_to_peak_scaled += stats->peak_to_peak_scaled;
+        accumulated_stats.frequency_hz += stats->frequency_hz;
+        stats_count++;
+    }
+}
+
+// Calculate averaged statistics
+static adc_statistics_t get_averaged_statistics(void)
+{
+    adc_statistics_t averaged = accumulated_stats;
+    
+    if (stats_count > 1) {
+        averaged.ac_rms_voltage_scaled /= stats_count;
+        averaged.peak_to_peak_scaled /= stats_count;
+        averaged.frequency_hz /= stats_count;
+    }
+    
+    return averaged;
+}
+
+// Reset accumulation state
+static void reset_accumulation(void)
+{
+    memset(&accumulated_stats, 0, sizeof(adc_statistics_t));
+    stats_count = 0;
+    have_accumulated_data = false;
+}
+
+// Write a log entry to flash
+static esp_err_t write_log_entry(const log_entry_t *entry)
+{
+    if (!log_partition || !entry) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    // Check if we need to wrap around to the beginning of the partition
+    if (current_write_offset + LOG_ENTRY_SIZE > log_partition->size) {
+        current_write_offset = 0;
+        
+        // Erase the first block when we wrap around
+        esp_err_t ret = esp_partition_erase_range(log_partition, 0, LOG_BLOCK_SIZE);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to erase first block on wrap-around");
+            return ret;
+        }
+    }
+    
+    // Ensure we have an erased block ahead of our current position
+    esp_err_t ret = ensure_erased_ahead();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+    
+    // Write the entry to flash
+    ret = esp_partition_write(log_partition, current_write_offset, entry, sizeof(log_entry_t));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write log entry at offset %lu", current_write_offset);
+        return ret;
+    }
+    
+    // Update tracking variables
+    current_write_offset += LOG_ENTRY_SIZE;
+    total_entries_written++;
+    
+    return ESP_OK;
+}
+
 /*---------------------------------------------------------------
         Public API Implementation
 ---------------------------------------------------------------*/
@@ -150,6 +293,9 @@ esp_err_t nvs_logging_init(void)
         ESP_LOGE(TAG, "Failed to ensure erased block ahead");
         return ret;
     }
+    
+    // Load configuration from NVS
+    load_config_from_nvs();
     
     logging_initialized = true;
     ESP_LOGI(TAG, "NVS logging initialized. Current offset: %lu, Total entries: %lu", 
@@ -328,49 +474,139 @@ void nvs_logging_statistics_callback(const adc_statistics_t *stats)
         return;
     }
     
-    // Prepare log entry
-    log_entry_t entry = {
-        .magic = LOG_MAGIC_NUMBER,
-        .timestamp_us = esp_timer_get_time(),
-        .timestamp_unix = rtc_get_time(),
-        .boot_counter = get_boot_counter(),
-        .ac_rms_voltage_scaled = stats->ac_rms_voltage_scaled,
-        .peak_to_peak_scaled = stats->peak_to_peak_scaled,
-        .frequency_hz = stats->frequency_hz,
-    };
+    uint64_t current_time_us = esp_timer_get_time();
+    uint64_t time_since_last_log_us = current_time_us - last_log_time_us;
+    uint64_t log_interval_us = current_config.log_interval_seconds * 1000000ULL;
     
-    // Calculate CRC
-    entry.crc32 = calculate_entry_crc(&entry);
-    
-    // Check if we need to wrap around
-    if (current_write_offset + LOG_ENTRY_SIZE > log_partition->size) {
-        current_write_offset = 0;
-        ESP_LOGI(TAG, "Wrapping to beginning of partition");
-    }
-    
-    // Write the entry
-    esp_err_t ret = esp_partition_write(log_partition, current_write_offset, &entry, sizeof(log_entry_t));
-    if (ret == ESP_OK) {
-        current_write_offset += LOG_ENTRY_SIZE;
-        total_entries_written++;
+    if (current_config.auto_averaging) {
+        // Accumulate statistics for averaging
+        accumulate_statistics(stats);
         
-        // Log every 10th entry to verify it's working
-        if (total_entries_written % 10 == 0) {
-            ESP_LOGI(TAG, "Logged entry #%lu at offset %lu, freq=%.1fHz, voltage=%.1fV", 
-                     total_entries_written, current_write_offset - LOG_ENTRY_SIZE, 
-                     stats->frequency_hz, stats->ac_rms_voltage_scaled);
-        }
-        
-        // Check if we need to erase the next block
-        if ((current_write_offset % LOG_BLOCK_SIZE) == 0) {
-            ensure_erased_ahead();
+        // Check if it's time to log
+        if (last_log_time_us == 0 || time_since_last_log_us >= log_interval_us) {
+            // Get averaged statistics
+            adc_statistics_t averaged_stats = get_averaged_statistics();
+            
+            // Prepare log entry with averaged data
+            log_entry_t entry = {
+                .magic = LOG_MAGIC_NUMBER,
+                .timestamp_us = current_time_us,
+                .timestamp_unix = rtc_get_time(),
+                .boot_counter = get_boot_counter(),
+                .ac_rms_voltage_scaled = averaged_stats.ac_rms_voltage_scaled,
+                .peak_to_peak_scaled = averaged_stats.peak_to_peak_scaled,
+                .frequency_hz = averaged_stats.frequency_hz,
+            };
+            
+            // Calculate CRC
+            entry.crc32 = calculate_entry_crc(&entry);
+            
+            // Write the entry
+            esp_err_t ret = write_log_entry(&entry);
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "Logged averaged entry #%lu (from %lu samples), freq=%.1fHz, voltage=%.1fV", 
+                         total_entries_written, stats_count, 
+                         averaged_stats.frequency_hz, averaged_stats.ac_rms_voltage_scaled);
+            }
+            
+            // Reset accumulation and update timing
+            reset_accumulation();
+            last_log_time_us = current_time_us;
         }
     } else {
-        ESP_LOGE(TAG, "Failed to write log entry at offset %lu: %s", 
-                 current_write_offset, esp_err_to_name(ret));
+        // No averaging - log every interval
+        if (last_log_time_us == 0 || time_since_last_log_us >= log_interval_us) {
+            // Prepare log entry with current data
+            log_entry_t entry = {
+                .magic = LOG_MAGIC_NUMBER,
+                .timestamp_us = current_time_us,
+                .timestamp_unix = rtc_get_time(),
+                .boot_counter = get_boot_counter(),
+                .ac_rms_voltage_scaled = stats->ac_rms_voltage_scaled,
+                .peak_to_peak_scaled = stats->peak_to_peak_scaled,
+                .frequency_hz = stats->frequency_hz,
+            };
+            
+            // Calculate CRC
+            entry.crc32 = calculate_entry_crc(&entry);
+            
+            // Write the entry
+            esp_err_t ret = write_log_entry(&entry);
+            if (ret == ESP_OK && total_entries_written % 10 == 0) {
+                ESP_LOGI(TAG, "Logged entry #%lu, freq=%.1fHz, voltage=%.1fV", 
+                         total_entries_written, stats->frequency_hz, stats->ac_rms_voltage_scaled);
+            }
+            
+            last_log_time_us = current_time_us;
+        }
     }
     
     xSemaphoreGive(logging_mutex);
+}
+
+/*---------------------------------------------------------------
+        Configuration API Functions
+---------------------------------------------------------------*/
+
+esp_err_t nvs_logging_set_config(const log_config_t *config)
+{
+    if (!logging_initialized || config == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    // Validate configuration parameters
+    if (config->log_interval_seconds < LOG_FREQ_MIN_SECONDS || 
+        config->log_interval_seconds > LOG_FREQ_MAX_SECONDS) {
+        ESP_LOGE(TAG, "Invalid log interval: %lu (must be between %d and %d seconds)", 
+                 config->log_interval_seconds, LOG_FREQ_MIN_SECONDS, LOG_FREQ_MAX_SECONDS);
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    // Take mutex to ensure thread safety
+    if (xSemaphoreTake(logging_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        ESP_LOGW(TAG, "Failed to acquire mutex for config update");
+        return ESP_ERR_TIMEOUT;
+    }
+    
+    // Update configuration
+    current_config = *config;
+    
+    // Reset accumulation state when configuration changes
+    reset_accumulation();
+    last_log_time_us = 0; // Force immediate log on next callback
+    
+    xSemaphoreGive(logging_mutex);
+    
+    // Save to NVS
+    esp_err_t ret = save_config_to_nvs();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to save configuration to NVS: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    ESP_LOGI(TAG, "Configuration updated: interval=%lus, averaging=%s", 
+             config->log_interval_seconds,
+             config->auto_averaging ? "enabled" : "disabled");
+    
+    return ESP_OK;
+}
+
+esp_err_t nvs_logging_get_config(log_config_t *config)
+{
+    if (!logging_initialized || config == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    // Take mutex to ensure thread safety
+    if (xSemaphoreTake(logging_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        ESP_LOGW(TAG, "Failed to acquire mutex for config read");
+        return ESP_ERR_TIMEOUT;
+    }
+    
+    *config = current_config;
+    
+    xSemaphoreGive(logging_mutex);
+    return ESP_OK;
 }
 
 /*---------------------------------------------------------------

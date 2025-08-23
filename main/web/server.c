@@ -676,6 +676,24 @@ httpd_handle_t start_webserver(void)
         };
         httpd_register_uri_handler(server, &ws);
 
+        // Logging configuration GET handler
+        httpd_uri_t api_logging_config_get = {
+            .uri       = "/api/logging/config",
+            .method    = HTTP_GET,
+            .handler   = api_logging_config_get_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(server, &api_logging_config_get);
+
+        // Logging configuration POST handler
+        httpd_uri_t api_logging_config_post = {
+            .uri       = "/api/logging/config",
+            .method    = HTTP_POST,
+            .handler   = api_logging_config_post_handler,
+            .user_ctx  = NULL
+        };
+        httpd_register_uri_handler(server, &api_logging_config_post);
+
         return server;
     }
 
@@ -732,4 +750,114 @@ static esp_err_t send_entry_http_callback(const log_entry_t *entry, void *user_d
     ctx->entries_sent++;
     
     return ESP_OK;
+}
+
+/*---------------------------------------------------------------
+        Logging Configuration API Handlers
+---------------------------------------------------------------*/
+esp_err_t api_logging_config_get_handler(httpd_req_t *req)
+{
+    log_config_t config;
+    esp_err_t ret = nvs_logging_get_config(&config);
+    
+    if (ret != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"status\":\"error\",\"message\":\"Failed to get logging configuration\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    
+    char json_response[256];
+    snprintf(json_response, sizeof(json_response),
+        "{"
+        "\"status\":\"success\","
+        "\"data\":{"
+        "\"log_interval_seconds\":%lu,"
+        "\"auto_averaging\":%s,"
+        "\"min_interval\":%d,"
+        "\"max_interval\":%d"
+        "}"
+        "}",
+        config.log_interval_seconds,
+        config.auto_averaging ? "true" : "false",
+        LOG_FREQ_MIN_SECONDS,
+        LOG_FREQ_MAX_SECONDS
+    );
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
+}
+
+esp_err_t api_logging_config_post_handler(httpd_req_t *req)
+{
+    char buf[256];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"status\":\"error\",\"message\":\"No data received\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    
+    buf[ret] = '\0';
+    
+    // Parse JSON: {"log_interval_seconds": 30, "auto_averaging": true}
+    char *interval_start = strstr(buf, "\"log_interval_seconds\":");
+    char *averaging_start = strstr(buf, "\"auto_averaging\":");
+    
+    if (!interval_start) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"status\":\"error\",\"message\":\"Missing log_interval_seconds parameter\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    
+    // Parse interval
+    interval_start += 23; // Skip "log_interval_seconds":
+    ESP_LOGI(TAG, "Parsing log interval from: %s", interval_start);
+    uint32_t interval = atoi(interval_start);
+
+    // Validate interval
+    if (interval < LOG_FREQ_MIN_SECONDS || interval > LOG_FREQ_MAX_SECONDS) {
+        char error_msg[128];
+        snprintf(error_msg, sizeof(error_msg), 
+            "{\"status\":\"error\",\"message\":\"Invalid interval: %lu (must be %d-%d seconds)\"}",
+            interval, LOG_FREQ_MIN_SECONDS, LOG_FREQ_MAX_SECONDS);
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, error_msg, HTTPD_RESP_USE_STRLEN);
+    }
+    
+    // Parse averaging (optional, defaults to true)
+    bool averaging = true;
+    if (averaging_start) {
+        averaging_start += 17; // Skip "auto_averaging":
+        // Skip whitespace and check for 'f' (false) or 't' (true)
+        while (*averaging_start == ' ' || *averaging_start == '\t') averaging_start++;
+        if (*averaging_start == 'f') {
+            averaging = false;
+        }
+    }
+    
+    // Create new configuration
+    log_config_t new_config = {
+        .log_interval_seconds = interval,
+        .auto_averaging = averaging
+    };
+    
+    // Apply configuration
+    esp_err_t config_ret = nvs_logging_set_config(&new_config);
+    if (config_ret != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"status\":\"error\",\"message\":\"Failed to update logging configuration\"}", HTTPD_RESP_USE_STRLEN);
+    }
+    
+    // Send success response
+    char response[200];
+    snprintf(response, sizeof(response),
+        "{\"status\":\"success\",\"message\":\"Logging configuration updated\",\"interval\":%lu,\"averaging\":%s}",
+        interval, averaging ? "true" : "false");
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
 }
