@@ -333,17 +333,10 @@ void nvs_logging_statistics_callback(const adc_statistics_t *stats)
         .magic = LOG_MAGIC_NUMBER,
         .timestamp_us = esp_timer_get_time(),
         .timestamp_unix = rtc_get_time(),
-        .mean_voltage_mv = stats->mean_voltage_mv,
-        .rms_voltage_mv = stats->rms_voltage_mv,
-        .ac_rms_voltage_mv = stats->ac_rms_voltage_mv,
-        .std_dev_voltage_mv = stats->std_dev_voltage_mv,
-        .min_voltage_mv = stats->min_voltage_mv,
-        .max_voltage_mv = stats->max_voltage_mv,
-        .peak_to_peak_mv = stats->peak_to_peak_mv,
+        .boot_counter = get_boot_counter(),
         .ac_rms_voltage_scaled = stats->ac_rms_voltage_scaled,
         .peak_to_peak_scaled = stats->peak_to_peak_scaled,
         .frequency_hz = stats->frequency_hz,
-        .zero_crossings = stats->zero_crossings,
     };
     
     // Calculate CRC

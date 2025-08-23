@@ -286,7 +286,7 @@ esp_err_t api_history_data_get_handler(httpd_req_t *req)
     
     // Send entries
     for (uint32_t i = 0; i < entries_read; i++) {
-        char entry_json[600];
+        char entry_json[300]; // Reduced buffer size for slimmed-down structure
         
         // Convert Unix timestamp to ISO8601 string
         char iso8601_time[32] = "null";
@@ -299,33 +299,19 @@ esp_err_t api_history_data_get_handler(httpd_req_t *req)
             "\"timestamp_us\":%llu,"
             "\"timestamp_unix\":%lld,"
             "\"timestamp_iso8601\":\"%s\","
-            "\"mean_voltage_mv\":%.2f,"
-            "\"rms_voltage_mv\":%.2f,"
-            "\"ac_rms_voltage_mv\":%.2f,"
-            "\"std_dev_voltage_mv\":%.2f,"
-            "\"min_voltage_mv\":%.2f,"
-            "\"max_voltage_mv\":%.2f,"
-            "\"peak_to_peak_mv\":%.2f,"
+            "\"boot_counter\":%d,"
             "\"ac_rms_voltage_scaled\":%.2f,"
             "\"peak_to_peak_scaled\":%.2f,"
-            "\"frequency_hz\":%.2f,"
-            "\"zero_crossings\":%lu"
+            "\"frequency_hz\":%.2f"
             "}",
             (i > 0) ? "," : "",
             entries[i].timestamp_us,
             entries[i].timestamp_unix,
             iso8601_time,
-            entries[i].mean_voltage_mv,
-            entries[i].rms_voltage_mv,
-            entries[i].ac_rms_voltage_mv,
-            entries[i].std_dev_voltage_mv,
-            entries[i].min_voltage_mv,
-            entries[i].max_voltage_mv,
-            entries[i].peak_to_peak_mv,
+            entries[i].boot_counter,
             entries[i].ac_rms_voltage_scaled,
             entries[i].peak_to_peak_scaled,
-            entries[i].frequency_hz,
-            entries[i].zero_crossings
+            entries[i].frequency_hz
         );
         httpd_resp_send_chunk(req, entry_json, strlen(entry_json));
     }

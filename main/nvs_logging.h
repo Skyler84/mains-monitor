@@ -13,23 +13,16 @@
 #define LOG_BUFFER_BLOCKS       16                      // Number of blocks to keep as buffer
 #define LOG_MAGIC_NUMBER        0xADC12345              // Magic number to identify valid entries
 
-// Log entry structure - matches adc_statistics_t but with timestamp and magic
+// Log entry structure - slimmed down for efficient flash storage
 typedef struct {
     uint32_t magic;                 // Magic number for validation
-    uint64_t timestamp_us;          // Legacy: microseconds since boot (for compatibility)
+    uint64_t timestamp_us;          // Microseconds since boot (for precise timing)
     time_t timestamp_unix;          // Unix timestamp (seconds since epoch)
-    float mean_voltage_mv;          // DC bias voltage
-    float rms_voltage_mv;          // Total RMS voltage
-    float ac_rms_voltage_mv;       // AC RMS voltage (DC bias removed)
-    float std_dev_voltage_mv;      // Standard deviation in mV
-    float min_voltage_mv;          // Minimum voltage
-    float max_voltage_mv;          // Maximum voltage
-    float peak_to_peak_mv;         // Peak-to-peak voltage
-    float ac_rms_voltage_scaled;   // AC RMS scaled to mains voltage
-    float peak_to_peak_scaled;     // Peak-to-peak scaled to mains voltage
-    float frequency_hz;            // Measured frequency from zero crossings
-    uint32_t zero_crossings;       // Number of zero crossings detected
-    uint32_t crc32;                // CRC32 checksum of the data
+    int boot_counter;               // Boot counter for ordering across reboots
+    float ac_rms_voltage_scaled;    // AC RMS scaled to mains voltage
+    float peak_to_peak_scaled;      // Peak-to-peak scaled to mains voltage
+    float frequency_hz;             // Measured frequency from zero crossings
+    uint32_t crc32;                 // CRC32 checksum of the data
 } __attribute__((packed)) log_entry_t;
 
 // Logging status structure
