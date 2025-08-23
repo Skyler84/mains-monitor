@@ -372,3 +372,173 @@ void nvs_logging_statistics_callback(const adc_statistics_t *stats)
     
     xSemaphoreGive(logging_mutex);
 }
+
+/*---------------------------------------------------------------
+        Timeframe Reading Functions
+---------------------------------------------------------------*/
+
+// Calculate Unix time for entries without RTC using boot counter offset
+static time_t calculate_unix_time_from_boot(uint64_t timestamp_us, int boot_counter, 
+                                           time_t reference_unix_time, uint64_t reference_timestamp_us, 
+                                           int reference_boot_counter)
+{
+    // If boot counters match, we can calculate offset within the same boot cycle
+    if (boot_counter == reference_boot_counter) {
+        // Calculate the time difference in seconds
+        int64_t time_diff_us = (int64_t)timestamp_us - (int64_t)reference_timestamp_us;
+        return reference_unix_time + (time_diff_us / 1000000);
+    }
+    
+    // Different boot cycles - we can't reliably calculate this without more context
+    return 0;
+}
+
+esp_err_t nvs_logging_read_entries_by_timeframe(time_t start_time, time_t end_time, 
+                                               nvs_logging_entry_callback_t callback, 
+                                               void *user_data)
+{
+    if (!logging_initialized || callback == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    if (start_time > end_time) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    // Take mutex to ensure thread safety
+    if (xSemaphoreTake(logging_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        ESP_LOGW(TAG, "Failed to acquire mutex for timeframe reading");
+        return ESP_ERR_TIMEOUT;
+    }
+    
+    const uint32_t CHUNK_SIZE = 50; // Process 50 entries at a time
+    uint32_t entries_found = 0;
+    esp_err_t ret = ESP_OK;
+    
+    // Calculate starting position - search from current write position backwards
+    uint32_t current_offset = current_write_offset;
+    if (current_offset == 0) {
+        current_offset = log_partition->size; // Start from end if at beginning
+    }
+    
+    // Variables for boot counter offset calculation
+    time_t reference_unix_time = 0;
+    uint64_t reference_timestamp_us = 0;
+    int reference_boot_counter = -1;
+    bool have_reference = false;
+    
+    ESP_LOGI(TAG, "Searching timeframe %lld to %lld, starting from offset %lu", 
+             start_time, end_time, current_offset);
+    
+    // Allocate buffer for chunk processing
+    log_entry_t *chunk_buffer = malloc(CHUNK_SIZE * sizeof(log_entry_t));
+    if (!chunk_buffer) {
+        xSemaphoreGive(logging_mutex);
+        return ESP_ERR_NO_MEM;
+    }
+    
+    uint32_t search_offset = current_offset;
+    bool found_entries_in_range = false;
+    
+    // Search backwards through the partition
+    while (search_offset > 0 && ret == ESP_OK) {
+        // Calculate chunk start position
+        uint32_t chunk_start;
+        uint32_t entries_to_read;
+        
+        if (search_offset >= CHUNK_SIZE * sizeof(log_entry_t)) {
+            chunk_start = search_offset - (CHUNK_SIZE * sizeof(log_entry_t));
+            entries_to_read = CHUNK_SIZE;
+        } else {
+            chunk_start = 0;
+            entries_to_read = search_offset / sizeof(log_entry_t);
+        }
+        
+        if (entries_to_read == 0) break;
+        
+        // Read chunk from flash
+        ret = esp_partition_read(log_partition, chunk_start, chunk_buffer, 
+                               entries_to_read * sizeof(log_entry_t));
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to read chunk at offset %lu: %s", 
+                     chunk_start, esp_err_to_name(ret));
+            break;
+        }
+        
+        // Process entries in reverse order (newest first)
+        for (int i = entries_to_read - 1; i >= 0 && ret == ESP_OK; i--) {
+            log_entry_t *entry = &chunk_buffer[i];
+            
+            // Validate entry
+            if (entry->magic != LOG_MAGIC_NUMBER || entry->magic == 0xFFFFFFFF) {
+                continue; // Skip invalid entries
+            }
+            
+            // Validate CRC
+            uint32_t calculated_crc = calculate_entry_crc(entry);
+            if (calculated_crc != entry->crc32) {
+                continue; // Skip corrupted entries
+            }
+            
+            // Calculate effective Unix time for this entry
+            time_t effective_unix_time = entry->timestamp_unix;
+            
+            // If no RTC time set, try to calculate from boot counter offset
+            if (effective_unix_time == 0 && have_reference) {
+                effective_unix_time = calculate_unix_time_from_boot(
+                    entry->timestamp_us, entry->boot_counter,
+                    reference_unix_time, reference_timestamp_us, reference_boot_counter
+                );
+            }
+            
+            // Update reference time if this entry has valid RTC time
+            if (entry->timestamp_unix > 0) {
+                reference_unix_time = entry->timestamp_unix;
+                reference_timestamp_us = entry->timestamp_us;
+                reference_boot_counter = entry->boot_counter;
+                have_reference = true;
+            }
+            
+            // Check if entry is in our time range
+            if (effective_unix_time >= start_time && effective_unix_time <= end_time) {
+                found_entries_in_range = true;
+                
+                // Create a copy with the effective timestamp
+                log_entry_t effective_entry = *entry;
+                effective_entry.timestamp_unix = effective_unix_time;
+                
+                // Call the callback with this entry
+                ret = callback(&effective_entry, user_data);
+                if (ret != ESP_OK) {
+                    break; // Stop if callback indicates error
+                }
+                
+                entries_found++;
+                
+                // Yield every 10 entries to prevent watchdog timeout
+                if (entries_found % 10 == 0) {
+                    vTaskDelay(pdMS_TO_TICKS(1));
+                }
+            }
+            
+            // If we've gone past our start time (remember we're going backwards), stop searching
+            if (effective_unix_time < start_time && found_entries_in_range) {
+                ESP_LOGI(TAG, "Reached start of time range, stopping search");
+                goto search_complete;
+            }
+        }
+        
+        // Move to next chunk
+        search_offset = chunk_start;
+        
+        // Yield between chunks to prevent watchdog timeout
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    
+search_complete:
+    free(chunk_buffer);
+    xSemaphoreGive(logging_mutex);
+    
+    ESP_LOGI(TAG, "Timeframe search complete: found %lu entries", entries_found);
+    return ret;
+}

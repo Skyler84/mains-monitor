@@ -9,6 +9,7 @@
 
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/task.h"
 
 static const char *TAG = "WEB_SERVER";
 
@@ -24,6 +25,8 @@ bool ws_client_connected = false;        // WebSocket client connection status
 // WebSocket batch variables
 ws_batch_packet_t current_batch = {0};
 size_t batch_index = 0;
+
+static esp_err_t send_entry_http_callback(const log_entry_t *entry, void *user_data);
 
 /*---------------------------------------------------------------
         WebSocket Callback Functions
@@ -235,44 +238,40 @@ esp_err_t api_history_data_get_handler(httpd_req_t *req)
     size_t query_len = sizeof(query);
     esp_err_t ret = httpd_req_get_url_query_str(req, query, query_len);
     
-    uint32_t start_offset = 0;
-    uint32_t count = 100; // Default to 100 entries
+    time_t start_time = 0;
+    time_t end_time = 0;
+    bool use_time_range = false;
     
     if (ret == ESP_OK) {
         char param[32];
         
-        // Parse start offset
-        if (httpd_query_key_value(query, "offset", param, sizeof(param)) == ESP_OK) {
-            start_offset = atoi(param);
+        // Parse start time (Unix timestamp)
+        if (httpd_query_key_value(query, "start", param, sizeof(param)) == ESP_OK) {
+            start_time = atol(param);
+            use_time_range = true;
         }
         
-        // Parse count
-        if (httpd_query_key_value(query, "count", param, sizeof(param)) == ESP_OK) {
-            count = atoi(param);
-            if (count > 1000) count = 1000; // Limit to prevent memory issues
+        // Parse end time (Unix timestamp)  
+        if (httpd_query_key_value(query, "end", param, sizeof(param)) == ESP_OK) {
+            end_time = atol(param);
+            use_time_range = true;
         }
     }
     
-    // Allocate memory for entries
-    log_entry_t *entries = malloc(count * sizeof(log_entry_t));
-    if (entries == NULL) {
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        httpd_resp_set_type(req, "application/json");
-        return httpd_resp_send(req, "{\"status\":\"error\",\"message\":\"Memory allocation failed\"}", HTTPD_RESP_USE_STRLEN);
+    // If no time range specified, default to last 24 hours
+    if (!use_time_range) {
+        end_time = rtc_get_time();
+        start_time = end_time - (24 * 60 * 60); // 24 hours ago
     }
     
-    uint32_t entries_read = 0;
-    ret = nvs_logging_read_entries(start_offset, count, entries, &entries_read);
-    
-    if (ret != ESP_OK) {
-        free(entries);
-        httpd_resp_set_status(req, "500 Internal Server Error");
+    // Validate time range
+    if (start_time > end_time) {
+        httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_set_type(req, "application/json");
-        return httpd_resp_send(req, "{\"status\":\"error\",\"message\":\"Failed to read entries\"}", HTTPD_RESP_USE_STRLEN);
+        return httpd_resp_send(req, "{\"status\":\"error\",\"message\":\"Start time must be before end time\"}", HTTPD_RESP_USE_STRLEN);
     }
     
-    ESP_LOGI(TAG, "API: Read %lu entries from NVS logging (requested %lu, offset %lu)", 
-             entries_read, count, start_offset);
+    ESP_LOGI(TAG, "API: Reading entries from %lld to %lld (Unix timestamps)", start_time, end_time);
     
     // Start JSON response
     httpd_resp_set_type(req, "application/json");
@@ -280,47 +279,37 @@ esp_err_t api_history_data_get_handler(httpd_req_t *req)
     
     char json_header[256];
     snprintf(json_header, sizeof(json_header), 
-        "{\"status\":\"success\",\"data\":{\"entries_read\":%lu,\"start_offset\":%lu,\"entries\":[",
-        entries_read, start_offset);
+        "{\"status\":\"success\",\"data\":{\"start_time\":%lld,\"end_time\":%lld,\"entries\":[",
+        start_time, end_time);
     httpd_resp_send_chunk(req, json_header, strlen(json_header));
     
-    // Send entries
-    for (uint32_t i = 0; i < entries_read; i++) {
-        char entry_json[300]; // Reduced buffer size for slimmed-down structure
-        
-        // Convert Unix timestamp to ISO8601 string
-        char iso8601_time[32] = "null";
-        if (entries[i].timestamp_unix > 0) {
-            rtc_time_to_iso8601(entries[i].timestamp_unix, iso8601_time, sizeof(iso8601_time));
-        }
-        
-        snprintf(entry_json, sizeof(entry_json),
-            "%s{"
-            "\"timestamp_us\":%llu,"
-            "\"timestamp_unix\":%lld,"
-            "\"timestamp_iso8601\":\"%s\","
-            "\"boot_counter\":%d,"
-            "\"ac_rms_voltage_scaled\":%.2f,"
-            "\"peak_to_peak_scaled\":%.2f,"
-            "\"frequency_hz\":%.2f"
-            "}",
-            (i > 0) ? "," : "",
-            entries[i].timestamp_us,
-            entries[i].timestamp_unix,
-            iso8601_time,
-            entries[i].boot_counter,
-            entries[i].ac_rms_voltage_scaled,
-            entries[i].peak_to_peak_scaled,
-            entries[i].frequency_hz
-        );
-        httpd_resp_send_chunk(req, entry_json, strlen(entry_json));
+    // Set up callback context
+    http_response_context_t ctx = {
+        .req = req,
+        .first_entry = true,
+        .entries_sent = 0,
+        .result = ESP_OK
+    };
+    
+    // Read and send entries using the nvs_logging API
+    ret = nvs_logging_read_entries_by_timeframe(start_time, end_time, send_entry_http_callback, &ctx);
+    
+    if (ret != ESP_OK || ctx.result != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read timeframe entries: nvs_ret=%s, http_ret=%s", 
+                 esp_err_to_name(ret), esp_err_to_name(ctx.result));
+        // If we failed partway through, try to close the JSON gracefully
+        httpd_resp_send_chunk(req, "]}}", 3);
+        httpd_resp_send_chunk(req, NULL, 0);
+        return (ret != ESP_OK) ? ret : ctx.result;
     }
+    
+    ESP_LOGI(TAG, "Successfully sent %lu entries for timeframe %lld to %lld", 
+             ctx.entries_sent, start_time, end_time);
     
     // Close JSON
     httpd_resp_send_chunk(req, "]}}", 3);
     httpd_resp_send_chunk(req, NULL, 0); // End chunked response
     
-    free(entries);
     return ESP_OK;
 }
 
@@ -692,4 +681,55 @@ httpd_handle_t start_webserver(void)
 
     ESP_LOGI(TAG, "Error starting server!");
     return NULL;
+}
+
+/*---------------------------------------------------------------
+        Timeframe Reading Helper Functions  
+---------------------------------------------------------------*/
+
+// Callback function for sending entries via HTTP chunked response
+static esp_err_t send_entry_http_callback(const log_entry_t *entry, void *user_data)
+{
+    http_response_context_t *ctx = (http_response_context_t *)user_data;
+    
+    // Format entry as JSON
+    char entry_json[350];
+    char iso8601_time[32] = "null";
+    
+    if (entry->timestamp_unix > 0) {
+        rtc_time_to_iso8601(entry->timestamp_unix, iso8601_time, sizeof(iso8601_time));
+    }
+    
+    snprintf(entry_json, sizeof(entry_json),
+        "%s{"
+        "\"timestamp_us\":%llu,"
+        "\"timestamp_unix\":%lld,"
+        "\"timestamp_iso8601\":\"%s\","
+        "\"boot_counter\":%d,"
+        "\"ac_rms_voltage_scaled\":%.2f,"
+        "\"peak_to_peak_scaled\":%.2f,"
+        "\"frequency_hz\":%.2f"
+        "}",
+        ctx->first_entry ? "" : ",",
+        entry->timestamp_us,
+        entry->timestamp_unix,
+        iso8601_time,
+        entry->boot_counter,
+        entry->ac_rms_voltage_scaled,
+        entry->peak_to_peak_scaled,
+        entry->frequency_hz
+    );
+    
+    // Send the JSON chunk
+    esp_err_t ret = httpd_resp_send_chunk(ctx->req, entry_json, strlen(entry_json));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to send HTTP chunk");
+        ctx->result = ret;
+        return ret;
+    }
+    
+    ctx->first_entry = false;
+    ctx->entries_sent++;
+    
+    return ESP_OK;
 }

@@ -53,6 +53,16 @@ esp_err_t nvs_logging_get_status(log_status_t *status);
 // count: maximum number of entries to read
 esp_err_t nvs_logging_read_entries(uint32_t start_offset, uint32_t count, log_entry_t *entries, uint32_t *entries_read);
 
+// Read log entries by timeframe with callback for chunked processing
+// start_time: Unix timestamp for start of range
+// end_time: Unix timestamp for end of range
+// callback: function called for each entry found in range
+// user_data: pointer passed to callback function
+typedef esp_err_t (*nvs_logging_entry_callback_t)(const log_entry_t *entry, void *user_data);
+esp_err_t nvs_logging_read_entries_by_timeframe(time_t start_time, time_t end_time, 
+                                               nvs_logging_entry_callback_t callback, 
+                                               void *user_data);
+
 // Erase all log data (factory reset)
 esp_err_t nvs_logging_erase_all(void);
 

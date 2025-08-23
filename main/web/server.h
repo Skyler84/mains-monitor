@@ -25,6 +25,15 @@ typedef struct {
     size_t count;
 } ws_batch_packet_t;
 
+// Context structure for chunked HTTP response
+typedef struct {
+    httpd_req_t *req;
+    bool first_entry;
+    uint32_t entries_sent;
+    esp_err_t result;
+} http_response_context_t;
+
+
 
 extern httpd_handle_t server;
 
