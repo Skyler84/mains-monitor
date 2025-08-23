@@ -23,8 +23,12 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 
 static const char *TAG = "ADC_MONITOR";
+
+// Boot counter for tracking reboots
+static int boot_counter = 0;
 
 // Callback subscription arrays
 static adc_raw_callback_t raw_callbacks[MAX_RAW_CALLBACKS] = {NULL};
@@ -162,6 +166,7 @@ static void adc_timer_callback(void* arg);
 static void adc_processing_task(void *pvParameters);
 static void calculate_statistics(const float *voltage_buffer, adc_statistics_t *stats);
 static void update_system_status(const adc_statistics_t *stats);
+static esp_err_t load_and_increment_boot_counter(void);
 void app_main(void)
 {
     // Initialize NVS
@@ -171,6 +176,14 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    // Load and increment boot counter
+    ret = load_and_increment_boot_counter();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to load boot counter: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Boot #%d", boot_counter);
+    }
     
     // Initialize LED status system first for early feedback
     ESP_ERROR_CHECK(led_status_init());
@@ -568,6 +581,67 @@ static void calculate_statistics(const float *voltage_buffer, adc_statistics_t *
     // Scale to mains voltage
     stats->ac_rms_voltage_scaled = (stats->ac_rms_voltage_mv / 1000.0f) * TOTAL_SCALING;
     stats->peak_to_peak_scaled = (stats->peak_to_peak_mv / 1000.0f) * TOTAL_SCALING;
+}
+
+/*---------------------------------------------------------------
+        Boot Counter Management
+---------------------------------------------------------------*/
+static esp_err_t load_and_increment_boot_counter(void)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err;
+    
+    // Open NVS namespace
+    err = nvs_open("boot_info", NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error opening NVS handle for boot counter: %s", esp_err_to_name(err));
+        return err;
+    }
+    
+    // Read the boot counter, defaulting to 0 if not found
+    size_t required_size = sizeof(boot_counter);
+    err = nvs_get_blob(nvs_handle, "boot_count", &boot_counter, &required_size);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        // First boot - initialize counter to 0
+        boot_counter = 0;
+        ESP_LOGI(TAG, "Boot counter not found in NVS, initializing to 0");
+    } else if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error reading boot counter from NVS: %s", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return err;
+    }
+    
+    // Increment the counter
+    boot_counter++;
+    
+    // Write the updated counter back to NVS
+    err = nvs_set_blob(nvs_handle, "boot_count", &boot_counter, sizeof(boot_counter));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error writing boot counter to NVS: %s", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return err;
+    }
+    
+    // Commit the changes
+    err = nvs_commit(nvs_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error committing boot counter to NVS: %s", esp_err_to_name(err));
+        nvs_close(nvs_handle);
+        return err;
+    }
+    
+    // Close NVS handle
+    nvs_close(nvs_handle);
+    
+    return ESP_OK;
+}
+
+/*---------------------------------------------------------------
+        Boot Counter Public API
+---------------------------------------------------------------*/
+int get_boot_counter(void)
+{
+    return boot_counter;
 }
 
 /*---------------------------------------------------------------

@@ -61,3 +61,6 @@ int adc_unsubscribe_statistics(adc_statistics_callback_t callback);
 
 // Latest statistics for web display
 extern adc_statistics_t latest_stats;
+
+// Boot counter access
+int get_boot_counter(void);
