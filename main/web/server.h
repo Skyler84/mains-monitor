@@ -1,6 +1,6 @@
 #pragma once
 
-#include "main.h"
+#include "adc.h"
 
 #include "esp_http_server.h"
 #include "freertos/FreeRTOS.h"

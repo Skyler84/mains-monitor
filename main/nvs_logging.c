@@ -1,4 +1,5 @@
 #include "nvs_logging.h"
+#include "adc.h"
 #include "rtc_time.h"
 
 #include "esp_log.h"

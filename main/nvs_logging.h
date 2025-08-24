@@ -1,6 +1,7 @@
 #pragma once
 
 #include "main.h"
+#include "adc.h"
 #include "esp_err.h"
 #include "esp_partition.h"
 #include <time.h>

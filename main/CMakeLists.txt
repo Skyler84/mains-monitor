@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS 
         "main.c"
+        "adc.c"
         "wifi.c"
         "rtc_time.c"
         "nvs_logging.c"
