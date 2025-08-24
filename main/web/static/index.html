@@ -552,6 +552,11 @@
         let updateInterval;
         let isLogging = false;
         let backgroundLogging = false; // Continue logging when tab is hidden
+        // Ensure only one /api/stats request is in flight at a time.
+        // If multiple triggers occur while a request is active, we remember
+        // a single pending request and run it once the in-flight request completes.
+        let apiRequestInFlight = false;
+        let apiRequestPending = false;
         let historyData = [];
         let maxHistoryPoints = 5000; // Keep last 5000 measurements
         let historyTimeSource = 'unknown'; // Track if using real time or boot time
@@ -845,16 +850,25 @@
         }
         
         function updateStats() {
+            // If a request is already running, mark that we want one more
+            // and return — the pending request will be executed when the
+            // active request finishes. This prevents multiple concurrent
+            // requests from flooding the ESP32.
+            if (apiRequestInFlight) {
+                apiRequestPending = true;
+                return;
+            }
+
+            apiRequestInFlight = true;
+
             fetch('/api/stats')
                 .then(response => {
-                    if (!response.ok) {
-                        throw new Error('Network response was not ok');
-                    }
+                    if (!response.ok) throw new Error('Network response was not ok');
                     return response.json();
                 })
                 .then(data => {
                     updateStatus(true);
-                    
+
                     // Update current values
                     document.getElementById('dc-bias').textContent = data.dc_bias.toFixed(1);
                     document.getElementById('ac-rms').textContent = data.ac_rms.toFixed(1);
@@ -863,15 +877,23 @@
                     document.getElementById('zero-crossings').textContent = data.zero_crossings;
                     document.getElementById('mains-rms').textContent = data.mains_rms.toFixed(1);
                     document.getElementById('mains-peak').textContent = data.mains_peak.toFixed(1);
-                    
+
                     // Log data if logging is enabled
-                    if (isLogging) {
-                        logData(data);
-                    }
+                    if (isLogging) logData(data);
                 })
                 .catch(err => {
                     console.error('Error:', err);
                     updateStatus(false);
+                })
+                .finally(() => {
+                    apiRequestInFlight = false;
+                    // If another trigger occurred while we were busy, run one
+                    // additional request now (and clear the pending flag).
+                    if (apiRequestPending) {
+                        apiRequestPending = false;
+                        // Schedule next call asynchronously to avoid deep recursion
+                        setTimeout(updateStats, 0);
+                    }
                 });
         }
         
