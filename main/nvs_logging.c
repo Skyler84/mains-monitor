@@ -183,10 +183,8 @@ static void accumulate_statistics(const periodic_statistics_t *stats)
         stats_count = 1;
         have_accumulated_data = true;
     } else {
-        // Accumulate values for averaging
-        accumulated_stats.ac_rms_voltage_scaled += stats->ac_rms_voltage_scaled;
-        accumulated_stats.peak_to_peak_scaled += stats->peak_to_peak_scaled;
-        accumulated_stats.frequency_hz += stats->frequency_hz;
+        // Use the canonical accumulator which weights by time_period_s
+        adc_accumulate_statistics(&accumulated_stats, stats);
         stats_count++;
     }
 }
@@ -194,15 +192,8 @@ static void accumulate_statistics(const periodic_statistics_t *stats)
 // Calculate averaged statistics
 static periodic_statistics_t get_averaged_statistics(void)
 {
-    periodic_statistics_t averaged = accumulated_stats;
-    
-    if (stats_count > 1) {
-        averaged.ac_rms_voltage_scaled /= stats_count;
-        averaged.peak_to_peak_scaled /= stats_count;
-        averaged.frequency_hz /= stats_count;
-    }
-    
-    return averaged;
+    // accumulated_stats already represents the weighted aggregation when using adc_accumulate_statistics
+    return accumulated_stats;
 }
 
 // Reset accumulation state
@@ -468,27 +459,27 @@ void nvs_logging_statistics_callback(const periodic_statistics_t *stats)
     if (!logging_initialized || !logging_active || stats == NULL) {
         return;
     }
-    
+
     // Take mutex with timeout to avoid blocking in callback
     if (xSemaphoreTake(logging_mutex, pdMS_TO_TICKS(10)) != pdTRUE) {
         ESP_LOGW(TAG, "Failed to acquire mutex in statistics callback");
         return;
     }
-    
+
     uint64_t current_time_us = esp_timer_get_time();
     uint64_t time_since_last_log_us = current_time_us - last_log_time_us;
     uint64_t log_interval_us = current_config.log_interval_seconds * 1000000ULL;
-    
+
     if (current_config.auto_averaging) {
         // Accumulate statistics for averaging
         accumulate_statistics(stats);
-        
+
         // Check if it's time to log
         if (last_log_time_us == 0 || time_since_last_log_us >= log_interval_us) {
             // Get averaged statistics
             periodic_statistics_t averaged_stats = get_averaged_statistics();
-            
-            // Prepare log entry with averaged data
+
+            // Prepare log entry with averaged data (include new min/max/time_period fields)
             log_entry_t entry = {
                 .magic = LOG_MAGIC_NUMBER,
                 .timestamp_us = current_time_us,
@@ -497,11 +488,14 @@ void nvs_logging_statistics_callback(const periodic_statistics_t *stats)
                 .ac_rms_voltage_scaled = averaged_stats.ac_rms_voltage_scaled,
                 .peak_to_peak_scaled = averaged_stats.peak_to_peak_scaled,
                 .frequency_hz = averaged_stats.frequency_hz,
+                .min_frequency_hz = averaged_stats.min_frequency_hz,
+                .max_frequency_hz = averaged_stats.max_frequency_hz,
+                .time_period_s = averaged_stats.time_period_s,
             };
-            
+
             // Calculate CRC
             entry.crc32 = calculate_entry_crc(&entry);
-            
+
             // Write the entry
             esp_err_t ret = write_log_entry(&entry);
             if (ret == ESP_OK) {
@@ -509,7 +503,7 @@ void nvs_logging_statistics_callback(const periodic_statistics_t *stats)
                          total_entries_written, stats_count, 
                          averaged_stats.frequency_hz, averaged_stats.ac_rms_voltage_scaled);
             }
-            
+
             // Reset accumulation and update timing
             reset_accumulation();
             last_log_time_us = current_time_us;
@@ -517,7 +511,7 @@ void nvs_logging_statistics_callback(const periodic_statistics_t *stats)
     } else {
         // No averaging - log every interval
         if (last_log_time_us == 0 || time_since_last_log_us >= log_interval_us) {
-            // Prepare log entry with current data
+            // Prepare log entry with current data (include new fields)
             log_entry_t entry = {
                 .magic = LOG_MAGIC_NUMBER,
                 .timestamp_us = current_time_us,
@@ -526,22 +520,25 @@ void nvs_logging_statistics_callback(const periodic_statistics_t *stats)
                 .ac_rms_voltage_scaled = stats->ac_rms_voltage_scaled,
                 .peak_to_peak_scaled = stats->peak_to_peak_scaled,
                 .frequency_hz = stats->frequency_hz,
+                .min_frequency_hz = stats->min_frequency_hz,
+                .max_frequency_hz = stats->max_frequency_hz,
+                .time_period_s = stats->time_period_s,
             };
-            
+
             // Calculate CRC
             entry.crc32 = calculate_entry_crc(&entry);
-            
+
             // Write the entry
             esp_err_t ret = write_log_entry(&entry);
             if (ret == ESP_OK && total_entries_written % 10 == 0) {
                 ESP_LOGI(TAG, "Logged entry #%lu, freq=%.1fHz, voltage=%.1fV", 
                          total_entries_written, stats->frequency_hz, stats->ac_rms_voltage_scaled);
             }
-            
+
             last_log_time_us = current_time_us;
         }
     }
-    
+
     xSemaphoreGive(logging_mutex);
 }
 

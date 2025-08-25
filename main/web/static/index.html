@@ -1083,8 +1083,8 @@
                             return {
                                 timestamp: timestamp,
                                 frequency: entry.frequency_hz,
-                                minFrequency: (typeof entry.min_frequency !== 'undefined') ? entry.min_frequency : entry.frequency_hz,
-                                maxFrequency: (typeof entry.max_frequency !== 'undefined') ? entry.max_frequency : entry.frequency_hz,
+                                minFrequency: (typeof entry.min_frequency_hz !== 'undefined') ? entry.min_frequency_hz : entry.frequency_hz,
+                                maxFrequency: (typeof entry.max_frequency_hz !== 'undefined') ? entry.max_frequency_hz : entry.frequency_hz,
                                 acRms: entry.ac_rms_voltage_scaled,
                                 peakPeak: entry.peak_to_peak_scaled,
                                 rawMean: entry.mean_voltage_mv,

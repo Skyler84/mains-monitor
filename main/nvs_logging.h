@@ -36,6 +36,9 @@ typedef struct {
     float ac_rms_voltage_scaled;    // AC RMS scaled to mains voltage
     float peak_to_peak_scaled;      // Peak-to-peak scaled to mains voltage
     float frequency_hz;             // Measured frequency from zero crossings
+    float min_frequency_hz;         // Minimum frequency observed during the logging period
+    float max_frequency_hz;         // Maximum frequency observed during the logging period
+    float time_period_s;            // Time period covered by this entry (seconds)
     uint32_t crc32;                 // CRC32 checksum of the data
 } __attribute__((packed)) log_entry_t;
 

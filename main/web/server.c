@@ -717,7 +717,7 @@ static esp_err_t send_entry_http_callback(const log_entry_t *entry, void *user_d
     http_response_context_t *ctx = (http_response_context_t *)user_data;
     
     // Format entry as JSON
-    char entry_json[350];
+    char entry_json[512];
     char iso8601_time[32] = "null";
     
     if (entry->timestamp_unix > 0) {
@@ -732,7 +732,10 @@ static esp_err_t send_entry_http_callback(const log_entry_t *entry, void *user_d
         "\"boot_counter\":%d,"
         "\"ac_rms_voltage_scaled\":%.2f,"
         "\"peak_to_peak_scaled\":%.2f,"
-        "\"frequency_hz\":%.2f"
+        "\"frequency_hz\":%.2f,"
+        "\"min_frequency_hz\":%.3f,"
+        "\"max_frequency_hz\":%.3f,"
+        "\"time_period_s\":%.3f"
         "}",
         ctx->first_entry ? "" : ",",
         entry->timestamp_us,
@@ -741,7 +744,10 @@ static esp_err_t send_entry_http_callback(const log_entry_t *entry, void *user_d
         entry->boot_counter,
         entry->ac_rms_voltage_scaled,
         entry->peak_to_peak_scaled,
-        entry->frequency_hz
+        entry->frequency_hz,
+        entry->min_frequency_hz,
+        entry->max_frequency_hz,
+        entry->time_period_s
     );
     
     // Send the JSON chunk
