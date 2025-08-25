@@ -185,15 +185,15 @@ static void accumulate_statistics(const periodic_statistics_t *stats)
         have_accumulated_data = true;
     } else {
         // Accumulate values for averaging
-        accumulated_stats.ac_rms_voltage_scaled += stats->ac_rms_voltage_scaled;
-        accumulated_stats.peak_to_peak_scaled += stats->peak_to_peak_scaled;
+        accumulated_stats.ac_rms_line_voltage += stats->ac_rms_line_voltage;
+        accumulated_stats.peak_to_peak_line_voltage += stats->peak_to_peak_line_voltage;
         accumulated_stats.frequency_hz += stats->frequency_hz;
         
         // For min/max values, take the extremes
         accumulated_stats.min_frequency_hz = fminf(accumulated_stats.min_frequency_hz, stats->min_frequency_hz);
         accumulated_stats.max_frequency_hz = fmaxf(accumulated_stats.max_frequency_hz, stats->max_frequency_hz);
-        accumulated_stats.min_voltage_scaled = fminf(accumulated_stats.min_voltage_scaled, stats->min_voltage_scaled);
-        accumulated_stats.max_voltage_scaled = fmaxf(accumulated_stats.max_voltage_scaled, stats->max_voltage_scaled);
+        accumulated_stats.min_ac_rms_line_voltage = fminf(accumulated_stats.min_ac_rms_line_voltage, stats->min_ac_rms_line_voltage);
+        accumulated_stats.max_ac_rms_line_voltage = fmaxf(accumulated_stats.max_ac_rms_line_voltage, stats->max_ac_rms_line_voltage);
         
         stats_count++;
     }
@@ -205,8 +205,8 @@ static periodic_statistics_t get_averaged_statistics(void)
     periodic_statistics_t averaged = accumulated_stats;
     
     if (stats_count > 1) {
-        averaged.ac_rms_voltage_scaled /= stats_count;
-        averaged.peak_to_peak_scaled /= stats_count;
+        averaged.ac_rms_line_voltage /= stats_count;
+        averaged.peak_to_peak_line_voltage /= stats_count;
         averaged.frequency_hz /= stats_count;
         // Note: min/max values are already the extremes, no averaging needed
     }
@@ -503,13 +503,13 @@ void nvs_logging_statistics_callback(const periodic_statistics_t *stats)
                 .timestamp_us = current_time_us,
                 .timestamp_unix = rtc_get_time(),
                 .boot_counter = get_boot_counter(),
-                .ac_rms_voltage_scaled = averaged_stats.ac_rms_voltage_scaled,
-                .peak_to_peak_scaled = averaged_stats.peak_to_peak_scaled,
+                .ac_rms_line_voltage = averaged_stats.ac_rms_line_voltage,
+                .peak_to_peak_line_voltage = averaged_stats.peak_to_peak_line_voltage,
                 .frequency_hz = averaged_stats.frequency_hz,
                 .min_frequency_hz = averaged_stats.min_frequency_hz,
                 .max_frequency_hz = averaged_stats.max_frequency_hz,
-                .min_voltage_scaled = averaged_stats.min_voltage_scaled,
-                .max_voltage_scaled = averaged_stats.max_voltage_scaled,
+                .min_ac_rms_line_voltage = averaged_stats.min_ac_rms_line_voltage,
+                .max_ac_rms_line_voltage = averaged_stats.max_ac_rms_line_voltage,
             };
             
             // Calculate CRC
@@ -520,7 +520,7 @@ void nvs_logging_statistics_callback(const periodic_statistics_t *stats)
             if (ret == ESP_OK) {
                 ESP_LOGI(TAG, "Logged averaged entry #%lu (from %lu samples), freq=%.2fHz, voltage=%.1fV", 
                          total_entries_written, stats_count, 
-                         averaged_stats.frequency_hz, averaged_stats.ac_rms_voltage_scaled);
+                         averaged_stats.frequency_hz, averaged_stats.ac_rms_line_voltage);
             }
             
             // Reset accumulation and update timing
@@ -536,13 +536,13 @@ void nvs_logging_statistics_callback(const periodic_statistics_t *stats)
                 .timestamp_us = current_time_us,
                 .timestamp_unix = rtc_get_time(),
                 .boot_counter = get_boot_counter(),
-                .ac_rms_voltage_scaled = stats->ac_rms_voltage_scaled,
-                .peak_to_peak_scaled = stats->peak_to_peak_scaled,
+                .ac_rms_line_voltage = stats->ac_rms_line_voltage,
+                .peak_to_peak_line_voltage = stats->peak_to_peak_line_voltage,
                 .frequency_hz = stats->frequency_hz,
                 .min_frequency_hz = stats->min_frequency_hz,
                 .max_frequency_hz = stats->max_frequency_hz,
-                .min_voltage_scaled = stats->min_voltage_scaled,
-                .max_voltage_scaled = stats->max_voltage_scaled,
+                .min_ac_rms_line_voltage = stats->min_ac_rms_line_voltage,
+                .max_ac_rms_line_voltage = stats->max_ac_rms_line_voltage,
             };
             
             // Calculate CRC
@@ -552,7 +552,7 @@ void nvs_logging_statistics_callback(const periodic_statistics_t *stats)
             esp_err_t ret = write_log_entry(&entry);
             if (ret == ESP_OK && total_entries_written % 10 == 0) {
                 ESP_LOGI(TAG, "Logged entry #%lu, freq=%.1fHz, voltage=%.1fV", 
-                         total_entries_written, stats->frequency_hz, stats->ac_rms_voltage_scaled);
+                         total_entries_written, stats->frequency_hz, stats->ac_rms_line_voltage);
             }
             
             last_log_time_us = current_time_us;

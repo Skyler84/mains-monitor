@@ -38,18 +38,17 @@ typedef struct {
     float mean_voltage_mv;           // DC bias voltage
     float rms_voltage_mv;           // Total RMS voltage
     float ac_rms_voltage_mv;        // AC RMS voltage (DC bias removed)
-    float std_dev_voltage_mv;       // Standard deviation in mV
     float min_voltage_mv;           // Minimum voltage
     float max_voltage_mv;           // Maximum voltage
     float peak_to_peak_mv;          // Peak-to-peak voltage
-    float ac_rms_voltage_scaled;    // AC RMS scaled to mains voltage
-    float peak_to_peak_scaled;      // Peak-to-peak scaled to mains voltage
-    float frequency_hz;             // Measured frequency from zero crossings
+    float ac_rms_line_voltage;    // AC RMS scaled to mains voltage
+    float peak_to_peak_line_voltage;      // Peak-to-peak scaled to mains voltage
     uint32_t zero_crossings;        // Number of zero crossings detected
+    float frequency_hz;             // Measured frequency from zero crossings
     float min_frequency_hz;         // Minimum frequency measured during the period
     float max_frequency_hz;         // Maximum frequency measured during the period
-    float min_voltage_scaled;       // Minimum RMS voltage scaled to mains voltage (tracked across periods)
-    float max_voltage_scaled;       // Maximum RMS voltage scaled to mains voltage (tracked across periods)
+    float min_ac_rms_line_voltage;       // Minimum RMS voltage scaled to mains voltage (tracked across periods)
+    float max_ac_rms_line_voltage;       // Maximum RMS voltage scaled to mains voltage (tracked across periods)
     float time_period_s;            // Duration (in seconds) that these statistics cover
 } periodic_statistics_t;
 

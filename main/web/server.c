@@ -112,12 +112,12 @@ esp_err_t api_stats_get_handler(httpd_req_t *req)
         stats->peak_to_peak_mv,
         stats->frequency_hz,
         stats->zero_crossings,
-        stats->ac_rms_voltage_scaled,
-        stats->peak_to_peak_scaled,
+        stats->ac_rms_line_voltage,
+        stats->peak_to_peak_line_voltage,
         stats->min_frequency_hz,
         stats->max_frequency_hz,
-        stats->min_voltage_scaled,
-        stats->max_voltage_scaled
+        stats->min_ac_rms_line_voltage,
+        stats->max_ac_rms_line_voltage
     );
 
     httpd_resp_set_type(req, "application/json");
@@ -734,26 +734,26 @@ static esp_err_t send_entry_http_callback(const log_entry_t *entry, void *user_d
         "\"timestamp_unix\":%lld,"
         "\"timestamp_iso8601\":\"%s\","
         "\"boot_counter\":%d,"
-        "\"ac_rms_voltage_scaled\":%.2f,"
-        "\"peak_to_peak_scaled\":%.2f,"
+        "\"ac_rms_line_voltage\":%.2f,"
+        "\"peak_to_peak_line_voltage\":%.2f,"
         "\"frequency_hz\":%.2f,"
         "\"min_frequency_hz\":%.3f,"
         "\"max_frequency_hz\":%.3f,"
-        "\"min_voltage_scaled\":%.2f,"
-        "\"max_voltage_scaled\":%.2f"
+        "\"min_ac_rms_line_voltage\":%.2f,"
+        "\"max_ac_rms_line_voltage\":%.2f"
         "}",
         ctx->first_entry ? "" : ",",
         entry->timestamp_us,
         entry->timestamp_unix,
         iso8601_time,
         entry->boot_counter,
-        entry->ac_rms_voltage_scaled,
-        entry->peak_to_peak_scaled,
+        entry->ac_rms_line_voltage,
+        entry->peak_to_peak_line_voltage,
         entry->frequency_hz,
         entry->min_frequency_hz,
         entry->max_frequency_hz,
-        entry->min_voltage_scaled,
-        entry->max_voltage_scaled
+        entry->min_ac_rms_line_voltage,
+        entry->max_ac_rms_line_voltage
     );
     
     // Send the JSON chunk

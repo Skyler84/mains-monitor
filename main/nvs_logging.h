@@ -33,13 +33,13 @@ typedef struct {
     uint64_t timestamp_us;          // Microseconds since boot (for precise timing)
     time_t timestamp_unix;          // Unix timestamp (seconds since epoch)
     int boot_counter;               // Boot counter for ordering across reboots
-    float ac_rms_voltage_scaled;    // AC RMS scaled to mains voltage
-    float peak_to_peak_scaled;      // Peak-to-peak scaled to mains voltage
+    float ac_rms_line_voltage;    // AC RMS scaled to mains voltage
+    float peak_to_peak_line_voltage;      // Peak-to-peak scaled to mains voltage
     float frequency_hz;             // Measured frequency from zero crossings
     float min_frequency_hz;         // Minimum frequency measured during the period
     float max_frequency_hz;         // Maximum frequency measured during the period
-    float min_voltage_scaled;       // Minimum RMS voltage scaled to mains voltage (tracked across periods)
-    float max_voltage_scaled;       // Maximum RMS voltage scaled to mains voltage (tracked across periods)
+    float min_ac_rms_line_voltage;       // Minimum RMS voltage scaled to mains voltage (tracked across periods)
+    float max_ac_rms_line_voltage;       // Maximum RMS voltage scaled to mains voltage (tracked across periods)
     uint32_t crc32;                 // CRC32 checksum of the data
 } __attribute__((packed)) log_entry_t;
 

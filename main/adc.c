@@ -449,7 +449,7 @@ static void update_system_status(const periodic_statistics_t *stats)
     }
     
     // Check voltage levels (reasonable mains voltage range: 100V - 260V RMS)
-    float voltage_rms = stats->ac_rms_voltage_scaled;
+    float voltage_rms = stats->ac_rms_line_voltage;
     if (voltage_rms > 260.0f) {
         status_flags |= LED_FLAG_VOLTAGE_HIGH;
     } else if (voltage_rms < 100.0f && voltage_rms > 5.0f) { // Ignore very low readings (no voltage present)
@@ -508,9 +508,6 @@ static void calculate_statistics(const float *voltage_buffer, periodic_statistic
     // AC RMS = sqrt(total_rms² - dc_mean²)
     float dc_squared = stats->mean_voltage_mv * stats->mean_voltage_mv;
     stats->ac_rms_voltage_mv = sqrtf((float)(sum_squares / BUFFER_SIZE) - dc_squared);
-
-    // Calculate standard deviation (same as AC RMS for DC-biased AC signals)
-    stats->std_dev_voltage_mv = stats->ac_rms_voltage_mv;
 
     // Set min/max voltages
     stats->min_voltage_mv = min_voltage;
@@ -585,13 +582,13 @@ static void calculate_statistics(const float *voltage_buffer, periodic_statistic
     stats->max_frequency_hz = stats->frequency_hz;
 
     // Scale to mains voltage
-    stats->ac_rms_voltage_scaled = (stats->ac_rms_voltage_mv / 1000.0f) * TOTAL_SCALING;
-    stats->peak_to_peak_scaled = (stats->peak_to_peak_mv / 1000.0f) * TOTAL_SCALING;
+    stats->ac_rms_line_voltage = (stats->ac_rms_voltage_mv / 1000.0f) * TOTAL_SCALING;
+    stats->peak_to_peak_line_voltage = (stats->peak_to_peak_mv / 1000.0f) * TOTAL_SCALING;
     
     // For this block, set min/max voltage equal to the current RMS voltage value (like frequency)
     // The actual min/max tracking across periods happens in the accumulation function
-    stats->min_voltage_scaled = stats->ac_rms_voltage_scaled;
-    stats->max_voltage_scaled = stats->ac_rms_voltage_scaled;
+    stats->min_ac_rms_line_voltage = stats->ac_rms_line_voltage;
+    stats->max_ac_rms_line_voltage = stats->ac_rms_line_voltage;
 
     // Time period covered by this statistics block
     stats->time_period_s = (float)BUFFER_SIZE / (float)SAMPLE_RATE_HZ;
@@ -618,9 +615,8 @@ void adc_accumulate_statistics(periodic_statistics_t *accum, const periodic_stat
     accum->mean_voltage_mv = (accum->mean_voltage_mv * t1 + src->mean_voltage_mv * t2) / total_t;
     accum->rms_voltage_mv = (accum->rms_voltage_mv * t1 + src->rms_voltage_mv * t2) / total_t;
     accum->ac_rms_voltage_mv = (accum->ac_rms_voltage_mv * t1 + src->ac_rms_voltage_mv * t2) / total_t;
-    accum->std_dev_voltage_mv = (accum->std_dev_voltage_mv * t1 + src->std_dev_voltage_mv * t2) / total_t;
-    accum->ac_rms_voltage_scaled = (accum->ac_rms_voltage_scaled * t1 + src->ac_rms_voltage_scaled * t2) / total_t;
-    accum->peak_to_peak_scaled = (accum->peak_to_peak_scaled * t1 + src->peak_to_peak_scaled * t2) / total_t;
+    accum->ac_rms_line_voltage = (accum->ac_rms_line_voltage * t1 + src->ac_rms_line_voltage * t2) / total_t;
+    accum->peak_to_peak_line_voltage = (accum->peak_to_peak_line_voltage * t1 + src->peak_to_peak_line_voltage * t2) / total_t;
     accum->frequency_hz = (accum->frequency_hz * t1 + src->frequency_hz * t2) / total_t;
 
     // For min/max take the extremes
@@ -628,8 +624,8 @@ void adc_accumulate_statistics(periodic_statistics_t *accum, const periodic_stat
     accum->max_voltage_mv = fmaxf(accum->max_voltage_mv, src->max_voltage_mv);
     accum->min_frequency_hz = fminf(accum->min_frequency_hz, src->min_frequency_hz);
     accum->max_frequency_hz = fmaxf(accum->max_frequency_hz, src->max_frequency_hz);
-    accum->min_voltage_scaled = fminf(accum->min_voltage_scaled, src->min_voltage_scaled);
-    accum->max_voltage_scaled = fmaxf(accum->max_voltage_scaled, src->max_voltage_scaled);
+    accum->min_ac_rms_line_voltage = fminf(accum->min_ac_rms_line_voltage, src->min_ac_rms_line_voltage);
+    accum->max_ac_rms_line_voltage = fmaxf(accum->max_ac_rms_line_voltage, src->max_ac_rms_line_voltage);
 
     // Peak-to-peak (mv) can be recalculated from min/max if desired
     accum->peak_to_peak_mv = accum->max_voltage_mv - accum->min_voltage_mv;
