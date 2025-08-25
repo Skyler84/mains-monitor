@@ -39,7 +39,7 @@ void ws_raw_data_callback(float voltage_mv, uint32_t sample_index)
         ws_decimation_counter = 0;
         
         // Remove DC bias from the filtered voltage before scaling
-        const adc_statistics_t* stats = adc_get_latest_stats();
+        const periodic_statistics_t* stats = adc_get_latest_stats();
         float ac_voltage_mv = voltage_mv - stats->mean_voltage_mv;
         
         // Scale AC voltage to mains voltage
@@ -91,7 +91,7 @@ esp_err_t favicon_get_handler(httpd_req_t *req)
 esp_err_t api_stats_get_handler(httpd_req_t *req)
 {
     char json_response[512];
-    const adc_statistics_t* stats = adc_get_latest_stats();
+    const periodic_statistics_t* stats = adc_get_latest_stats();
     
     snprintf(json_response, sizeof(json_response),
         "{"

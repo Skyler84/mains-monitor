@@ -49,19 +49,19 @@ static SemaphoreHandle_t processing_semaphore;
 static esp_timer_handle_t adc_timer;
 
 // Latest statistics for external access
-static adc_statistics_t latest_stats = {0};
+static periodic_statistics_t latest_stats = {0};
 
 // Function prototypes
 static bool example_adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle);
 static void example_adc_calibration_deinit(adc_cali_handle_t handle);
 static void adc_timer_callback(void* arg);
 static void adc_processing_task(void *pvParameters);
-static void calculate_statistics(const float *voltage_buffer, adc_statistics_t *stats);
-static void update_system_status(const adc_statistics_t *stats);
+static void calculate_statistics(const float *voltage_buffer, periodic_statistics_t *stats);
+static void update_system_status(const periodic_statistics_t *stats);
 static float IRAM_ATTR apply_moving_average_filter(float new_value);
 static float IRAM_ATTR apply_exponential_filter(float new_value);
 static void notify_raw_subscribers(float voltage_mv, uint32_t sample_index);
-static void notify_statistics_subscribers(const adc_statistics_t *stats);
+static void notify_statistics_subscribers(const periodic_statistics_t *stats);
 
 /*---------------------------------------------------------------
         Public API Implementation
@@ -196,7 +196,7 @@ void adc_cleanup(void)
     ESP_LOGI(TAG, "ADC subsystem cleaned up");
 }
 
-const adc_statistics_t* adc_get_latest_stats(void)
+const periodic_statistics_t* adc_get_latest_stats(void)
 {
     return &latest_stats;
 }
@@ -291,7 +291,7 @@ static void notify_raw_subscribers(float voltage_mv, uint32_t sample_index)
     }
 }
 
-static void notify_statistics_subscribers(const adc_statistics_t *stats)
+static void notify_statistics_subscribers(const periodic_statistics_t *stats)
 {
     xSemaphoreTake(callback_mutex, portMAX_DELAY);
     for (int i = 0; i < MAX_STATISTICS_CALLBACKS; i++) {
@@ -411,7 +411,7 @@ static void IRAM_ATTR adc_timer_callback(void* arg)
 ---------------------------------------------------------------*/
 static void adc_processing_task(void *pvParameters)
 {
-    adc_statistics_t stats;
+    periodic_statistics_t stats;
     
     while (1) {
         // Wait for buffer to be ready
@@ -439,7 +439,7 @@ static void adc_processing_task(void *pvParameters)
 /*---------------------------------------------------------------
         System Status Monitoring
 ---------------------------------------------------------------*/
-static void update_system_status(const adc_statistics_t *stats)
+static void update_system_status(const periodic_statistics_t *stats)
 {
     uint32_t status_flags = LED_FLAG_NONE;
     
@@ -481,91 +481,109 @@ static void update_system_status(const adc_statistics_t *stats)
 /*---------------------------------------------------------------
         Statistics Calculation - All in Voltage Domain
 ---------------------------------------------------------------*/
-static void calculate_statistics(const float *voltage_buffer, adc_statistics_t *stats)
+static void calculate_statistics(const float *voltage_buffer, periodic_statistics_t *stats)
 {
     double sum = 0.0;
     double sum_squares = 0.0;
     float min_voltage = voltage_buffer[0];
     float max_voltage = voltage_buffer[0];
-    
+
     // First pass: calculate basic statistics
     for (int i = 0; i < BUFFER_SIZE; i++) {
         float voltage = voltage_buffer[i];
         sum += voltage;
         sum_squares += voltage * voltage;
-        
+
         if (voltage < min_voltage) min_voltage = voltage;
         if (voltage > max_voltage) max_voltage = voltage;
     }
-    
+
     // Calculate mean voltage (DC bias)
     stats->mean_voltage_mv = (float)(sum / BUFFER_SIZE);
-    
+
     // Calculate total RMS voltage
     stats->rms_voltage_mv = sqrtf((float)(sum_squares / BUFFER_SIZE));
-    
+
     // Calculate AC RMS voltage (RMS with DC bias removed)
     // AC RMS = sqrt(total_rms² - dc_mean²)
     float dc_squared = stats->mean_voltage_mv * stats->mean_voltage_mv;
     stats->ac_rms_voltage_mv = sqrtf((float)(sum_squares / BUFFER_SIZE) - dc_squared);
-    
+
     // Calculate standard deviation (same as AC RMS for DC-biased AC signals)
     stats->std_dev_voltage_mv = stats->ac_rms_voltage_mv;
-    
+
     // Set min/max voltages
     stats->min_voltage_mv = min_voltage;
     stats->max_voltage_mv = max_voltage;
-    
+
     // Calculate peak-to-peak voltage
     stats->peak_to_peak_mv = max_voltage - min_voltage;
-    
+
     // Second pass: count zero crossings for frequency measurement with Schmitt trigger
     uint32_t zero_crossings = 0;
     uint32_t first_crossing_index = 0;
     uint32_t last_crossing_index = 0;
     uint32_t last_crossing_sample = 0;  // Track last crossing position for Schmitt trigger
+    uint32_t prev_crossing_sample = 0;  // Track previous crossing for interval measurement
     bool above_mean = (voltage_buffer[0] > stats->mean_voltage_mv);
     bool found_first_crossing = false;
-    
+
     const uint32_t MIN_CROSSING_INTERVAL = 25;  // Minimum samples between crossings (Schmitt trigger)
-    
+
+    // For min/max frequency tracking
+    float min_cycle_freq = INFINITY;
+    float max_cycle_freq = -INFINITY;
+
     for (int i = 1; i < BUFFER_SIZE; i++) {
         bool current_above_mean = (voltage_buffer[i] > stats->mean_voltage_mv);
-        
+
         // Detect crossing: state changed from above to below or below to above
         if (current_above_mean != above_mean) {
             // Apply Schmitt trigger: only count crossing if enough samples have passed since last crossing
             if (zero_crossings == 0 || (i - last_crossing_sample) >= MIN_CROSSING_INTERVAL) {
                 zero_crossings++;
+                prev_crossing_sample = last_crossing_sample;
                 last_crossing_sample = i;
-                
+
                 // Record first crossing index
                 if (!found_first_crossing) {
                     first_crossing_index = i;
                     found_first_crossing = true;
                 }
-                
+
                 // Always update last crossing index
                 last_crossing_index = i;
+
+                // If we have a previous crossing, compute instantaneous cycle frequency
+                if (prev_crossing_sample != 0) {
+                    uint32_t half_cycle_samples = last_crossing_sample - prev_crossing_sample;
+                    if (half_cycle_samples > 0) {
+                        // Full cycle frequency = SAMPLE_RATE_HZ / (2 * half_cycle_samples)
+                        float cycle_freq = (float)SAMPLE_RATE_HZ / (2.0f * (float)half_cycle_samples);
+                        if (cycle_freq < min_cycle_freq) min_cycle_freq = cycle_freq;
+                        if (cycle_freq > max_cycle_freq) max_cycle_freq = cycle_freq;
+                    }
+                }
+
                 above_mean = current_above_mean;
             }
             // If crossing is too soon after last one, ignore it but don't update above_mean
             // This prevents the state from changing until a valid crossing occurs
         }
     }
-    
+
     stats->zero_crossings = zero_crossings;
-    
+
     // Calculate frequency from zero crossings using actual time between crossings
     if (zero_crossings >= 2 && found_first_crossing) {
         // Calculate actual time between first and last crossing
         uint32_t crossing_span_samples = last_crossing_index - first_crossing_index;
         float crossing_span_seconds = (float)crossing_span_samples / (float)SAMPLE_RATE_HZ;
-        
+
         // Number of complete cycles in the crossing span
         // Each cycle has 2 zero crossings, so (zero_crossings - 1) gives us the crossings between first and last
         float cycles_in_span = (float)(zero_crossings - 1) / 2.0f;
-        
+
         if (cycles_in_span > 0.0f && crossing_span_seconds > 0.0f) {
             stats->frequency_hz = cycles_in_span / crossing_span_seconds;
         } else {
@@ -574,10 +592,63 @@ static void calculate_statistics(const float *voltage_buffer, adc_statistics_t *
     } else {
         stats->frequency_hz = 0.0f; // Not enough crossings to determine frequency
     }
-    
+
+    // Populate min/max frequency (if we never updated min_cycle_freq it means we didn't have intervals)
+    if (min_cycle_freq == INFINITY) {
+        stats->min_frequency_hz = stats->frequency_hz;
+    } else {
+        stats->min_frequency_hz = min_cycle_freq;
+    }
+    stats->max_frequency_hz = max_cycle_freq > 0.0f ? max_cycle_freq : stats->frequency_hz;
+
     // Scale to mains voltage
     stats->ac_rms_voltage_scaled = (stats->ac_rms_voltage_mv / 1000.0f) * TOTAL_SCALING;
     stats->peak_to_peak_scaled = (stats->peak_to_peak_mv / 1000.0f) * TOTAL_SCALING;
+
+    // Time period covered by this statistics block
+    stats->time_period_s = (float)BUFFER_SIZE / (float)SAMPLE_RATE_HZ;
+}
+
+// Accumulate/merge statistics: accum := weighted average of accum and src using their time_period_s
+void adc_accumulate_statistics(periodic_statistics_t *accum, const periodic_statistics_t *src)
+{
+    if (accum == NULL || src == NULL) return;
+
+    // If accum has no time period (uninitialized), simply copy src
+    if (accum->time_period_s <= 0.0f) {
+        *accum = *src;
+        return;
+    }
+
+    float t1 = accum->time_period_s;
+    float t2 = src->time_period_s > 0.0f ? src->time_period_s : 0.0f;
+    float total_t = t1 + t2;
+
+    if (total_t <= 0.0f) return; // nothing to do
+
+    // Weighted averages for linear quantities
+    accum->mean_voltage_mv = (accum->mean_voltage_mv * t1 + src->mean_voltage_mv * t2) / total_t;
+    accum->rms_voltage_mv = (accum->rms_voltage_mv * t1 + src->rms_voltage_mv * t2) / total_t;
+    accum->ac_rms_voltage_mv = (accum->ac_rms_voltage_mv * t1 + src->ac_rms_voltage_mv * t2) / total_t;
+    accum->std_dev_voltage_mv = (accum->std_dev_voltage_mv * t1 + src->std_dev_voltage_mv * t2) / total_t;
+    accum->ac_rms_voltage_scaled = (accum->ac_rms_voltage_scaled * t1 + src->ac_rms_voltage_scaled * t2) / total_t;
+    accum->peak_to_peak_scaled = (accum->peak_to_peak_scaled * t1 + src->peak_to_peak_scaled * t2) / total_t;
+    accum->frequency_hz = (accum->frequency_hz * t1 + src->frequency_hz * t2) / total_t;
+
+    // For min/max take the extremes
+    accum->min_voltage_mv = fminf(accum->min_voltage_mv, src->min_voltage_mv);
+    accum->max_voltage_mv = fmaxf(accum->max_voltage_mv, src->max_voltage_mv);
+    accum->min_frequency_hz = fminf(accum->min_frequency_hz, src->min_frequency_hz);
+    accum->max_frequency_hz = fmaxf(accum->max_frequency_hz, src->max_frequency_hz);
+
+    // Peak-to-peak (mv) can be recalculated from min/max if desired
+    accum->peak_to_peak_mv = accum->max_voltage_mv - accum->min_voltage_mv;
+
+    // Zero crossings are additive over non-overlapping time periods
+    accum->zero_crossings += src->zero_crossings;
+
+    // Update time period
+    accum->time_period_s = total_t;
 }
 
 /*---------------------------------------------------------------

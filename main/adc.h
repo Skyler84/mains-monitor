@@ -46,11 +46,14 @@ typedef struct {
     float peak_to_peak_scaled;      // Peak-to-peak scaled to mains voltage
     float frequency_hz;             // Measured frequency from zero crossings
     uint32_t zero_crossings;        // Number of zero crossings detected
-} adc_statistics_t;
+    float min_frequency_hz;         // Minimum frequency measured during the period
+    float max_frequency_hz;         // Maximum frequency measured during the period
+    float time_period_s;            // Duration (in seconds) that these statistics cover
+} periodic_statistics_t;
 
 // Callback function types
 typedef void (*adc_raw_callback_t)(float voltage_mv, uint32_t sample_index);
-typedef void (*adc_statistics_callback_t)(const adc_statistics_t *stats);
+typedef void (*adc_statistics_callback_t)(const periodic_statistics_t *stats);
 
 /*---------------------------------------------------*/
 /*                   Public API                      */
@@ -69,4 +72,7 @@ int adc_unsubscribe_raw_values(adc_raw_callback_t callback);
 int adc_unsubscribe_statistics(adc_statistics_callback_t callback);
 
 // Latest statistics access
-const adc_statistics_t* adc_get_latest_stats(void);
+const periodic_statistics_t* adc_get_latest_stats(void);
+
+// Merge/accumulate statistics: accum := weighted average of accum and src using their time_period_s
+void adc_accumulate_statistics(periodic_statistics_t *accum, const periodic_statistics_t *src);
