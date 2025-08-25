@@ -103,7 +103,9 @@ esp_err_t api_stats_get_handler(httpd_req_t *req)
         "\"mains_rms\":%.2f,"
         "\"mains_peak\":%.2f,"
         "\"min_frequency\":%.3f,"
-        "\"max_frequency\":%.3f"
+        "\"max_frequency\":%.3f,"
+        "\"min_voltage\":%.2f,"
+        "\"max_voltage\":%.2f"
         "}",
         stats->mean_voltage_mv,
         stats->ac_rms_voltage_mv,
@@ -113,7 +115,9 @@ esp_err_t api_stats_get_handler(httpd_req_t *req)
         stats->ac_rms_voltage_scaled,
         stats->peak_to_peak_scaled,
         stats->min_frequency_hz,
-        stats->max_frequency_hz
+        stats->max_frequency_hz,
+        stats->min_voltage_scaled,
+        stats->max_voltage_scaled
     );
 
     httpd_resp_set_type(req, "application/json");
@@ -735,7 +739,8 @@ static esp_err_t send_entry_http_callback(const log_entry_t *entry, void *user_d
         "\"frequency_hz\":%.2f,"
         "\"min_frequency_hz\":%.3f,"
         "\"max_frequency_hz\":%.3f,"
-        "\"time_period_s\":%.3f"
+        "\"min_voltage_scaled\":%.2f,"
+        "\"max_voltage_scaled\":%.2f"
         "}",
         ctx->first_entry ? "" : ",",
         entry->timestamp_us,
@@ -747,7 +752,8 @@ static esp_err_t send_entry_http_callback(const log_entry_t *entry, void *user_d
         entry->frequency_hz,
         entry->min_frequency_hz,
         entry->max_frequency_hz,
-        entry->time_period_s
+        entry->min_voltage_scaled,
+        entry->max_voltage_scaled
     );
     
     // Send the JSON chunk

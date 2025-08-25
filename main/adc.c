@@ -524,7 +524,6 @@ static void calculate_statistics(const float *voltage_buffer, periodic_statistic
     uint32_t first_crossing_index = 0;
     uint32_t last_crossing_index = 0;
     uint32_t last_crossing_sample = 0;  // Track last crossing position for Schmitt trigger
-    uint32_t prev_crossing_sample = 0;  // Track previous crossing for interval measurement
     bool above_mean = (voltage_buffer[0] > stats->mean_voltage_mv);
     bool found_first_crossing = false;
 
@@ -542,7 +541,6 @@ static void calculate_statistics(const float *voltage_buffer, periodic_statistic
             // Apply Schmitt trigger: only count crossing if enough samples have passed since last crossing
             if (zero_crossings == 0 || (i - last_crossing_sample) >= MIN_CROSSING_INTERVAL) {
                 zero_crossings++;
-                prev_crossing_sample = last_crossing_sample;
                 last_crossing_sample = i;
 
                 // Record first crossing index
@@ -589,6 +587,11 @@ static void calculate_statistics(const float *voltage_buffer, periodic_statistic
     // Scale to mains voltage
     stats->ac_rms_voltage_scaled = (stats->ac_rms_voltage_mv / 1000.0f) * TOTAL_SCALING;
     stats->peak_to_peak_scaled = (stats->peak_to_peak_mv / 1000.0f) * TOTAL_SCALING;
+    
+    // For this block, set min/max voltage equal to the current RMS voltage value (like frequency)
+    // The actual min/max tracking across periods happens in the accumulation function
+    stats->min_voltage_scaled = stats->ac_rms_voltage_scaled;
+    stats->max_voltage_scaled = stats->ac_rms_voltage_scaled;
 
     // Time period covered by this statistics block
     stats->time_period_s = (float)BUFFER_SIZE / (float)SAMPLE_RATE_HZ;
@@ -625,6 +628,8 @@ void adc_accumulate_statistics(periodic_statistics_t *accum, const periodic_stat
     accum->max_voltage_mv = fmaxf(accum->max_voltage_mv, src->max_voltage_mv);
     accum->min_frequency_hz = fminf(accum->min_frequency_hz, src->min_frequency_hz);
     accum->max_frequency_hz = fmaxf(accum->max_frequency_hz, src->max_frequency_hz);
+    accum->min_voltage_scaled = fminf(accum->min_voltage_scaled, src->min_voltage_scaled);
+    accum->max_voltage_scaled = fmaxf(accum->max_voltage_scaled, src->max_voltage_scaled);
 
     // Peak-to-peak (mv) can be recalculated from min/max if desired
     accum->peak_to_peak_mv = accum->max_voltage_mv - accum->min_voltage_mv;

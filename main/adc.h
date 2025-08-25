@@ -48,6 +48,8 @@ typedef struct {
     uint32_t zero_crossings;        // Number of zero crossings detected
     float min_frequency_hz;         // Minimum frequency measured during the period
     float max_frequency_hz;         // Maximum frequency measured during the period
+    float min_voltage_scaled;       // Minimum RMS voltage scaled to mains voltage (tracked across periods)
+    float max_voltage_scaled;       // Maximum RMS voltage scaled to mains voltage (tracked across periods)
     float time_period_s;            // Duration (in seconds) that these statistics cover
 } periodic_statistics_t;
 

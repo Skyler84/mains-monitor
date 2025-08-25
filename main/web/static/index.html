@@ -744,6 +744,34 @@
                             fill: false,
                             spanGaps: true,
                             yAxisID: 'y1'
+                        },
+                        {
+                            label: 'Min RMS Voltage (V)',
+                            data: [],
+                            borderColor: '#17a2b8',
+                            backgroundColor: 'rgba(23, 162, 184, 0.06)',
+                            tension: 0.1,
+                            pointRadius: 0,
+                            pointHoverRadius: 1,
+                            borderWidth: 1,
+                            fill: false,
+                            spanGaps: true,
+                            borderDash: [4,4],
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Max RMS Voltage (V)',
+                            data: [],
+                            borderColor: '#6f42c1',
+                            backgroundColor: 'rgba(111, 66, 193, 0.06)',
+                            tension: 0.1,
+                            pointRadius: 0,
+                            pointHoverRadius: 1,
+                            borderWidth: 1,
+                            fill: false,
+                            spanGaps: true,
+                            borderDash: [4,4],
+                            yAxisID: 'y'
                         }
                     ]
                 },
@@ -936,6 +964,8 @@
                 maxFrequency: (typeof data.max_frequency !== 'undefined') ? data.max_frequency : data.frequency,
                 acRms: data.mains_rms,
                 peakPeak: data.mains_peak,
+                minVoltage: (typeof data.min_voltage !== 'undefined') ? data.min_voltage : data.mains_rms,
+                maxVoltage: (typeof data.max_voltage !== 'undefined') ? data.max_voltage : data.mains_rms,
                 rawMean: data.dc_bias,
                 rawRms: data.ac_rms,
                 rawAcRms: data.ac_rms
@@ -983,6 +1013,16 @@
                 y: d.peakPeak
             }));
             
+            const minVoltageData = historyData.map(d => ({
+                x: d.timestamp,
+                y: (typeof d.minVoltage !== 'undefined') ? d.minVoltage : d.acRms
+            }));
+            
+            const maxVoltageData = historyData.map(d => ({
+                x: d.timestamp,
+                y: (typeof d.maxVoltage !== 'undefined') ? d.maxVoltage : d.acRms
+            }));
+            
             // Update frequency chart datasets
             frequencyChart.data.datasets[0].data = frequencyData;
             // If datasets for min/max exist, update them
@@ -995,6 +1035,11 @@
             // Update voltage chart
             voltageChart.data.datasets[0].data = acRmsData;
             voltageChart.data.datasets[1].data = peakPeakData;
+            // If datasets for min/max voltage exist, update them
+            if (voltageChart.data.datasets.length >= 4) {
+                voltageChart.data.datasets[2].data = minVoltageData;
+                voltageChart.data.datasets[3].data = maxVoltageData;
+            }
             voltageChart.update('none');
         }
         
@@ -1087,6 +1132,8 @@
                                 maxFrequency: (typeof entry.max_frequency_hz !== 'undefined') ? entry.max_frequency_hz : entry.frequency_hz,
                                 acRms: entry.ac_rms_voltage_scaled,
                                 peakPeak: entry.peak_to_peak_scaled,
+                                minVoltage: (typeof entry.min_voltage_scaled !== 'undefined') ? entry.min_voltage_scaled : entry.ac_rms_voltage_scaled,
+                                maxVoltage: (typeof entry.max_voltage_scaled !== 'undefined') ? entry.max_voltage_scaled : entry.ac_rms_voltage_scaled,
                                 rawMean: entry.mean_voltage_mv,
                                 rawRms: entry.rms_voltage_mv,
                                 rawAcRms: entry.ac_rms_voltage_mv
