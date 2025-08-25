@@ -530,9 +530,9 @@ static void calculate_statistics(const float *voltage_buffer, periodic_statistic
 
     const uint32_t MIN_CROSSING_INTERVAL = 25;  // Minimum samples between crossings (Schmitt trigger)
 
-    // For min/max frequency tracking
-    float min_cycle_freq = INFINITY;
-    float max_cycle_freq = -INFINITY;
+    // For this statistics block we will report min/max frequency equal to the
+    // averaged frequency measured over the block. Longer-term min/max can be
+    // derived by accumulating stats using adc_accumulate_statistics.
 
     for (int i = 1; i < BUFFER_SIZE; i++) {
         bool current_above_mean = (voltage_buffer[i] > stats->mean_voltage_mv);
@@ -553,17 +553,6 @@ static void calculate_statistics(const float *voltage_buffer, periodic_statistic
 
                 // Always update last crossing index
                 last_crossing_index = i;
-
-                // If we have a previous crossing, compute instantaneous cycle frequency
-                if (prev_crossing_sample != 0) {
-                    uint32_t half_cycle_samples = last_crossing_sample - prev_crossing_sample;
-                    if (half_cycle_samples > 0) {
-                        // Full cycle frequency = SAMPLE_RATE_HZ / (2 * half_cycle_samples)
-                        float cycle_freq = (float)SAMPLE_RATE_HZ / (2.0f * (float)half_cycle_samples);
-                        if (cycle_freq < min_cycle_freq) min_cycle_freq = cycle_freq;
-                        if (cycle_freq > max_cycle_freq) max_cycle_freq = cycle_freq;
-                    }
-                }
 
                 above_mean = current_above_mean;
             }
@@ -593,13 +582,9 @@ static void calculate_statistics(const float *voltage_buffer, periodic_statistic
         stats->frequency_hz = 0.0f; // Not enough crossings to determine frequency
     }
 
-    // Populate min/max frequency (if we never updated min_cycle_freq it means we didn't have intervals)
-    if (min_cycle_freq == INFINITY) {
-        stats->min_frequency_hz = stats->frequency_hz;
-    } else {
-        stats->min_frequency_hz = min_cycle_freq;
-    }
-    stats->max_frequency_hz = max_cycle_freq > 0.0f ? max_cycle_freq : stats->frequency_hz;
+    // For this block, set min/max equal to the averaged frequency value.
+    stats->min_frequency_hz = stats->frequency_hz;
+    stats->max_frequency_hz = stats->frequency_hz;
 
     // Scale to mains voltage
     stats->ac_rms_voltage_scaled = (stats->ac_rms_voltage_mv / 1000.0f) * TOTAL_SCALING;
