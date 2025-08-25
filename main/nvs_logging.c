@@ -769,7 +769,7 @@ esp_err_t nvs_logging_read_entries_by_timeframe(time_t start_time, time_t end_ti
         search_offset = chunk_start;
         
         // Yield between chunks to prevent watchdog timeout
-        vTaskDelay(pdMS_TO_TICKS(1));
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
     
 search_complete:
