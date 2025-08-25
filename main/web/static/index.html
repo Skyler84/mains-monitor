@@ -634,18 +634,46 @@
             frequencyChart = new Chart(ctx1, {
                 type: 'line',
                 data: {
-                    datasets: [{
-                        label: 'Frequency (Hz)',
-                        data: [],
-                        borderColor: '#28a745',
-                        backgroundColor: 'rgba(40, 167, 69, 0.1)',
-                        tension: 0.1,
-                        pointRadius: 0,
-                        pointHoverRadius: 1,
-                        borderWidth: 2,
-                        fill: false,
-                        spanGaps: true
-                    }]
+                    datasets: [
+                        {
+                            label: 'Frequency (Hz)',
+                            data: [],
+                            borderColor: '#28a745',
+                            backgroundColor: 'rgba(40, 167, 69, 0.1)',
+                            tension: 0.1,
+                            pointRadius: 0,
+                            pointHoverRadius: 1,
+                            borderWidth: 2,
+                            fill: false,
+                            spanGaps: true
+                        },
+                        {
+                            label: 'Min Frequency (Hz)',
+                            data: [],
+                            borderColor: '#fd7e14',
+                            backgroundColor: 'rgba(253, 126, 20, 0.06)',
+                            tension: 0.1,
+                            pointRadius: 0,
+                            pointHoverRadius: 1,
+                            borderWidth: 1,
+                            fill: false,
+                            spanGaps: true,
+                            borderDash: [4,4]
+                        },
+                        {
+                            label: 'Max Frequency (Hz)',
+                            data: [],
+                            borderColor: '#dc3545',
+                            backgroundColor: 'rgba(220, 53, 69, 0.06)',
+                            tension: 0.1,
+                            pointRadius: 0,
+                            pointHoverRadius: 1,
+                            borderWidth: 1,
+                            fill: false,
+                            spanGaps: true,
+                            borderDash: [4,4]
+                        }
+                    ]
                 },
                 options: {
                     responsive: true,
@@ -680,7 +708,7 @@
                     },
                     plugins: {
                         legend: {
-                            display: false
+                            display: true
                         }
                     }
                 }
@@ -899,26 +927,28 @@
         
         function logData(data) {
             const timestamp = new Date();
-            
+
             // Add new data point
             historyData.push({
                 timestamp: timestamp,
                 frequency: data.frequency,
+                minFrequency: (typeof data.min_frequency !== 'undefined') ? data.min_frequency : data.frequency,
+                maxFrequency: (typeof data.max_frequency !== 'undefined') ? data.max_frequency : data.frequency,
                 acRms: data.mains_rms,
                 peakPeak: data.mains_peak,
                 rawMean: data.dc_bias,
                 rawRms: data.ac_rms,
                 rawAcRms: data.ac_rms
             });
-            
+
             // Set time source for live data
             historyTimeSource = 'live';
-            
+
             // Keep only the last maxHistoryPoints
             if (historyData.length > maxHistoryPoints) {
                 historyData.shift();
             }
-            
+
             // Update charts
             updateCharts();
             updateHistoryInfo();
@@ -926,13 +956,23 @@
         
         function updateCharts() {
             if (!frequencyChart || !voltageChart) return;
-            
+
             // Format data as {x, y} objects for time-based charts
             const frequencyData = historyData.map(d => ({
                 x: d.timestamp,
                 y: d.frequency
             }));
-            
+
+            const minFreqData = historyData.map(d => ({
+                x: d.timestamp,
+                y: (typeof d.minFrequency !== 'undefined') ? d.minFrequency : d.frequency
+            }));
+
+            const maxFreqData = historyData.map(d => ({
+                x: d.timestamp,
+                y: (typeof d.maxFrequency !== 'undefined') ? d.maxFrequency : d.frequency
+            }));
+
             const acRmsData = historyData.map(d => ({
                 x: d.timestamp,
                 y: d.acRms
@@ -943,10 +983,15 @@
                 y: d.peakPeak
             }));
             
-            // Update frequency chart
+            // Update frequency chart datasets
             frequencyChart.data.datasets[0].data = frequencyData;
+            // If datasets for min/max exist, update them
+            if (frequencyChart.data.datasets.length >= 3) {
+                frequencyChart.data.datasets[1].data = minFreqData;
+                frequencyChart.data.datasets[2].data = maxFreqData;
+            }
             frequencyChart.update('none');
-            
+
             // Update voltage chart
             voltageChart.data.datasets[0].data = acRmsData;
             voltageChart.data.datasets[1].data = peakPeakData;
@@ -1019,7 +1064,7 @@
                         const serverHistory = data.data.entries.map(entry => {
                             // Check if we have real time (after 2020) or just boot time
                             const hasRealTime = entry.timestamp_unix > 1577836800; // After 2020-01-01
-                            
+
                             let timestamp;
                             if (hasRealTime) {
                                 // Use real Unix timestamp (convert seconds to milliseconds)
@@ -1034,10 +1079,12 @@
                                     Math.max(...data.data.entries.map(e => e.timestamp_us / 1000)) : bootTimeMs;
                                 timestamp = nowMs - (maxBootTimeMs - bootTimeMs);
                             }
-                            
+
                             return {
                                 timestamp: timestamp,
                                 frequency: entry.frequency_hz,
+                                minFrequency: (typeof entry.min_frequency !== 'undefined') ? entry.min_frequency : entry.frequency_hz,
+                                maxFrequency: (typeof entry.max_frequency !== 'undefined') ? entry.max_frequency : entry.frequency_hz,
                                 acRms: entry.ac_rms_voltage_scaled,
                                 peakPeak: entry.peak_to_peak_scaled,
                                 rawMean: entry.mean_voltage_mv,
@@ -1045,17 +1092,17 @@
                                 rawAcRms: entry.ac_rms_voltage_mv
                             };
                         });
-                        
+
                         // Replace current history with server data
                         historyData = serverHistory;
-                        
+
                         // Set time source based on data
                         const hasRealTime = data.data.entries.length > 0 && data.data.entries[0].timestamp_unix > 1577836800;
                         historyTimeSource = hasRealTime ? 'real' : 'boot_relative';
-                        
+
                         updateCharts();
                         updateHistoryInfo();
-                        
+
                         console.log(`Loaded ${data.data.entries.length} entries from server (${hasRealTime ? 'real time' : 'boot time relative'})`);
                     }
                 })

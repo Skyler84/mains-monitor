@@ -101,7 +101,9 @@ esp_err_t api_stats_get_handler(httpd_req_t *req)
         "\"frequency\":%.3f,"
         "\"zero_crossings\":%lu,"
         "\"mains_rms\":%.2f,"
-        "\"mains_peak\":%.2f"
+        "\"mains_peak\":%.2f,"
+        "\"min_frequency\":%.3f,"
+        "\"max_frequency\":%.3f"
         "}",
         stats->mean_voltage_mv,
         stats->ac_rms_voltage_mv,
@@ -109,7 +111,9 @@ esp_err_t api_stats_get_handler(httpd_req_t *req)
         stats->frequency_hz,
         stats->zero_crossings,
         stats->ac_rms_voltage_scaled,
-        stats->peak_to_peak_scaled
+        stats->peak_to_peak_scaled,
+        stats->min_frequency_hz,
+        stats->max_frequency_hz
     );
 
     httpd_resp_set_type(req, "application/json");
