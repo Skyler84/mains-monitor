@@ -26,7 +26,7 @@ static log_config_t current_config = {
 };
 static uint64_t last_log_time_us = 0;
 static uint32_t stats_count = 0;
-static adc_statistics_t accumulated_stats = {0};
+static periodic_statistics_t accumulated_stats = {0};
 static bool have_accumulated_data = false;
 
 /*---------------------------------------------------------------
@@ -175,7 +175,7 @@ static esp_err_t save_config_to_nvs(void)
 }
 
 // Accumulate statistics for averaging
-static void accumulate_statistics(const adc_statistics_t *stats)
+static void accumulate_statistics(const periodic_statistics_t *stats)
 {
     if (!have_accumulated_data) {
         // First sample - initialize
@@ -192,9 +192,9 @@ static void accumulate_statistics(const adc_statistics_t *stats)
 }
 
 // Calculate averaged statistics
-static adc_statistics_t get_averaged_statistics(void)
+static periodic_statistics_t get_averaged_statistics(void)
 {
-    adc_statistics_t averaged = accumulated_stats;
+    periodic_statistics_t averaged = accumulated_stats;
     
     if (stats_count > 1) {
         averaged.ac_rms_voltage_scaled /= stats_count;
@@ -208,7 +208,7 @@ static adc_statistics_t get_averaged_statistics(void)
 // Reset accumulation state
 static void reset_accumulation(void)
 {
-    memset(&accumulated_stats, 0, sizeof(adc_statistics_t));
+    memset(&accumulated_stats, 0, sizeof(periodic_statistics_t));
     stats_count = 0;
     have_accumulated_data = false;
 }
@@ -463,7 +463,7 @@ esp_err_t nvs_logging_erase_all(void)
     return ret;
 }
 
-void nvs_logging_statistics_callback(const adc_statistics_t *stats)
+void nvs_logging_statistics_callback(const periodic_statistics_t *stats)
 {
     if (!logging_initialized || !logging_active || stats == NULL) {
         return;
@@ -486,7 +486,7 @@ void nvs_logging_statistics_callback(const adc_statistics_t *stats)
         // Check if it's time to log
         if (last_log_time_us == 0 || time_since_last_log_us >= log_interval_us) {
             // Get averaged statistics
-            adc_statistics_t averaged_stats = get_averaged_statistics();
+            periodic_statistics_t averaged_stats = get_averaged_statistics();
             
             // Prepare log entry with averaged data
             log_entry_t entry = {
@@ -505,7 +505,7 @@ void nvs_logging_statistics_callback(const adc_statistics_t *stats)
             // Write the entry
             esp_err_t ret = write_log_entry(&entry);
             if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "Logged averaged entry #%lu (from %lu samples), freq=%.1fHz, voltage=%.1fV", 
+                ESP_LOGI(TAG, "Logged averaged entry #%lu (from %lu samples), freq=%.2fHz, voltage=%.1fV", 
                          total_entries_written, stats_count, 
                          averaged_stats.frequency_hz, averaged_stats.ac_rms_voltage_scaled);
             }
@@ -721,7 +721,7 @@ esp_err_t nvs_logging_read_entries_by_timeframe(time_t start_time, time_t end_ti
             time_t effective_unix_time = entry->timestamp_unix;
             
             // If no RTC time set, try to calculate from boot counter offset
-            if (effective_unix_time == 0 && have_reference) {
+            if (effective_unix_time == LOG_VALID_TIMESTAMP && have_reference) {
                 effective_unix_time = calculate_unix_time_from_boot(
                     entry->timestamp_us, entry->boot_counter,
                     reference_unix_time, reference_timestamp_us, reference_boot_counter
@@ -729,7 +729,7 @@ esp_err_t nvs_logging_read_entries_by_timeframe(time_t start_time, time_t end_ti
             }
             
             // Update reference time if this entry has valid RTC time
-            if (entry->timestamp_unix > 0) {
+            if (entry->timestamp_unix > LOG_VALID_TIMESTAMP) {
                 reference_unix_time = entry->timestamp_unix;
                 reference_timestamp_us = entry->timestamp_us;
                 reference_boot_counter = entry->boot_counter;
@@ -737,7 +737,7 @@ esp_err_t nvs_logging_read_entries_by_timeframe(time_t start_time, time_t end_ti
             }
             
             // Check if entry is in our time range
-            if (effective_unix_time >= start_time && effective_unix_time <= end_time) {
+            if (effective_unix_time >= start_time && effective_unix_time <= end_time && effective_unix_time > LOG_VALID_TIMESTAMP) {
                 found_entries_in_range = true;
                 
                 // Create a copy with the effective timestamp
@@ -759,7 +759,7 @@ esp_err_t nvs_logging_read_entries_by_timeframe(time_t start_time, time_t end_ti
             }
             
             // If we've gone past our start time (remember we're going backwards), stop searching
-            if (effective_unix_time < start_time && found_entries_in_range) {
+            if (effective_unix_time < start_time && found_entries_in_range && effective_unix_time > LOG_VALID_TIMESTAMP) {
                 ESP_LOGI(TAG, "Reached start of time range, stopping search");
                 goto search_complete;
             }

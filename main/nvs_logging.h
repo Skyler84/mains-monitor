@@ -19,6 +19,8 @@
 #define LOG_FREQ_MAX_SECONDS    300                     // Maximum logging interval (5 minutes)
 #define LOG_FREQ_DEFAULT        1                       // Default logging interval (1 second)
 
+#define LOG_VALID_TIMESTAMP     1755644400              // Approx. 2025-08-20 (to validate timestamps)
+
 // Logging configuration structure
 typedef struct {
     uint32_t log_interval_seconds;  // Logging interval in seconds (1-300)
@@ -83,4 +85,4 @@ esp_err_t nvs_logging_read_entries_by_timeframe(time_t start_time, time_t end_ti
 esp_err_t nvs_logging_erase_all(void);
 
 // Statistics callback function (internal)
-void nvs_logging_statistics_callback(const adc_statistics_t *stats);
+void nvs_logging_statistics_callback(const periodic_statistics_t *stats);
